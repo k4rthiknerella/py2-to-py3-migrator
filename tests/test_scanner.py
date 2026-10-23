@@ -182,3 +182,33 @@ def test_nontext_coding_cookie_is_never_free_of_blockers():
         assert t_findings[0].rule == "PY3-BAD-ENCODING-COOKIE"
     finally:
         shutil.rmtree(root)
+
+
+def test_undecodable_cookie_gives_a_host_independent_message():
+    # Real repro (independent check's round-3 held-back probes): a coding
+    # cookie naming a real text codec (unlike rot13 above), but these
+    # exact bytes are not actually valid under it. "coding: utf-16" on
+    # plain ASCII bytes and "coding: punycode" on plain ASCII bytes both
+    # fail to decode on both hosts - same verdict - but the real codec
+    # implementations' own exception text differs by host, confirmed to
+    # differ even in exception *type* for punycode (AttributeError on
+    # real 2.7.18, UnicodeDecodeError on real 3.14.9). The message must
+    # be built only from the declared cookie name, never from whatever
+    # the exception says, or R2 byte parity breaks.
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "utf16.py"), "wb") as f:
+            f.write(b"# -*- coding: utf-16 -*-\nx = 1\n")
+        with open(os.path.join(root, "puny.py"), "wb") as f:
+            f.write(b"# -*- coding: punycode -*-\nx = 1\n")
+        result = scan(root, jobs=1)
+        for name, cookie in (("utf16.py", "utf-16"), ("puny.py", "punycode")):
+            findings = [g for g in result.findings if g.file == name]
+            assert len(findings) == 1
+            assert findings[0].rule == "PY3-PARSE"
+            assert findings[0].versions == SUPPORTED_VERSIONS
+            assert findings[0].message == (
+                "does not parse under Python 2.7: coding: %s; these bytes "
+                "do not decode under the declared encoding" % cookie)
+    finally:
+        shutil.rmtree(root)

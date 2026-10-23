@@ -20,6 +20,8 @@ import warnings
 import parso
 from parso.parser import ParserSyntaxError
 
+from py2scan.encoding import undecodable_cookie
+
 _GRAMMAR = parso.load_grammar(version="2.7")
 _ENCODING_TOKEN = getattr(tokenize, "ENCODING", None)
 _UR_PREFIX_RE = re.compile(r'[uU][rR](?=[\'"])')
@@ -131,6 +133,24 @@ def parse_source(path, source):
     the native tokenizer could not lex the file even though parso could
     (defensive fallback, not expected to trigger on valid input).
     """
+    # R2: a coding cookie naming a real text codec (unlike the seven
+    # non-text ones scanner.py's bad_coding_cookie() already short-
+    # circuits on) can still fail to decode these particular bytes -
+    # e.g. "coding: utf-16" or "coding: punycode" on bytes that aren't
+    # actually valid utf-16/punycode. Both hosts agree the file is
+    # unparseable either way, but the real 2.7.18 and 3.14.9 codec
+    # implementations raise different exception text for the identical
+    # failure - confirmed to differ even in exception *type* for
+    # punycode (AttributeError vs. UnicodeDecodeError) - so building
+    # the message from the caught exception itself breaks byte parity.
+    # Checked here, before the grammar ever sees the bytes, with a
+    # message built only from the declared name, never the exception.
+    bad_decode = undecodable_cookie(source)
+    if bad_decode is not None:
+        message = (u"does not parse under Python 2.7: coding: %s; these "
+                   u"bytes do not decode under the declared encoding" % bad_decode)
+        return None, None, ParseFailure(1, message), False
+
     # parso's "2.7" grammar has no production for <>, so it hard-fails on
     # valid Python 2.7 source that native tokenize (check_ne_op) handles
     # fine. Swap it for the same-width != only for the grammar parse: the

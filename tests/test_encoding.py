@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 import sys
 
-from py2scan.encoding import bad_coding_cookie, decode_source_lines, display_path
+from py2scan.encoding import (
+    bad_coding_cookie, decode_source_lines, display_path, undecodable_cookie)
 
 
 def test_defaults_to_ascii():
@@ -77,3 +78,22 @@ def test_bad_coding_cookie_detects_each_nontext_codec_and_its_aliases():
 def test_bad_coding_cookie_passes_real_encodings_through():
     assert bad_coding_cookie(b"# -*- coding: utf-8 -*-\nx = 1\n") is None
     assert bad_coding_cookie(b"x = 1\n") is None
+
+
+def test_undecodable_cookie_detects_bytes_that_do_not_match_the_declared_name():
+    # Real repro (independent check's round-3 held-back probes): the
+    # cookie names a real text codec, unlike bad_coding_cookie's seven,
+    # but these particular bytes aren't actually valid under it.
+    assert undecodable_cookie(b"# -*- coding: utf-16 -*-\nx = 1\n") == u"utf-16"
+    assert undecodable_cookie(b"# -*- coding: punycode -*-\nx = 1\n") == u"punycode"
+
+
+def test_undecodable_cookie_passes_decodable_source_through():
+    assert undecodable_cookie(b"# -*- coding: utf-8 -*-\nx = 1\n") is None
+    assert undecodable_cookie(b"x = 1\n") is None
+
+
+def test_undecodable_cookie_defers_nontext_codecs_to_bad_coding_cookie():
+    # rot13 et al. decode without error on 2.7.18 (str is bytes there);
+    # bad_coding_cookie, not this function, is what reports them.
+    assert undecodable_cookie(b"# -*- coding: rot13 -*-\nx = 1\n") is None

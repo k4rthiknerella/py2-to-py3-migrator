@@ -56,6 +56,32 @@ def bad_coding_cookie(raw_bytes):
     return None
 
 
+def undecodable_cookie(raw_bytes):
+    """The declared coding-cookie name, if it is a legitimate text codec
+    (unlike the seven above, bad_coding_cookie's job) but these exact
+    bytes still fail to decode under it - e.g. a "coding: utf-16" or
+    "coding: punycode" cookie on bytes that are not actually valid
+    utf-16/punycode. None if decoding succeeds, if there is no cookie
+    at all, or if bad_coding_cookie already covers this name.
+
+    Deliberately reports only the declared name, never anything drawn
+    from the decode failure itself: the real 2.7.18 and 3.14.9 codec
+    implementations for the same declared name can disagree not only
+    in message wording but in exception *type* entirely (confirmed: an
+    unparseable "coding: punycode" raises AttributeError on real
+    2.7.18, UnicodeDecodeError on real 3.14.9, for byte-identical
+    input) - any text drawn from the exception breaks R2 byte parity
+    between hosts."""
+    name = detect_source_encoding(raw_bytes)
+    if encodings.normalize_encoding(name.lower()) in _NONTEXT_CODEC_NAMES:
+        return None
+    try:
+        raw_bytes.decode(name)
+    except Exception:
+        return name
+    return None
+
+
 def display_path(rel):
     """A relative path, guaranteed safe to hand to json.dumps or a
     unicode %-format, and guaranteed to render identically on both
