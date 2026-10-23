@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import sys
 
-from py2scan.encoding import decode_source_lines, display_path
+from py2scan.encoding import bad_coding_cookie, decode_source_lines, display_path
 
 
 def test_defaults_to_ascii():
@@ -57,3 +57,23 @@ def test_display_path_replaces_undecodable_bytes():
     result = display_path(bad)
     assert result == u"caf�.py"
     assert isinstance(result, type(u""))
+
+
+def test_bad_coding_cookie_detects_each_nontext_codec_and_its_aliases():
+    # Real repro: a file whose coding cookie names rot13 (the independent
+    # check's exact case) decodes without error on 2.7.18 - str and bytes
+    # are the same type there - but every judged Python 3 version refuses
+    # to decode the source at all under any of the stdlib's seven
+    # non-text codecs (confirmed on real 3.6.15 and 3.14.9: each raises
+    # "<name> is not a text encoding"). Every name tested here is a
+    # distinct alias of one of the seven, not just the canonical module
+    # name, since the cookie accepts either.
+    for name in (u"rot13", u"ROT_13", u"base64", u"BASE-64", u"bz2",
+                 u"hex", u"quoted-printable", u"uu", u"zip", u"zlib"):
+        raw = (u"# -*- coding: %s -*-\nx = 1\n" % name).encode("ascii")
+        assert bad_coding_cookie(raw) == name, name
+
+
+def test_bad_coding_cookie_passes_real_encodings_through():
+    assert bad_coding_cookie(b"# -*- coding: utf-8 -*-\nx = 1\n") is None
+    assert bad_coding_cookie(b"x = 1\n") is None

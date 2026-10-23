@@ -7,6 +7,7 @@ import subprocess
 import sys
 from concurrent.futures import ProcessPoolExecutor
 
+from py2scan.encoding import bad_coding_cookie
 from py2scan.findings import Finding
 from py2scan.parsing import parse_source
 from py2scan.rules import RULES
@@ -123,6 +124,20 @@ def scan_file(root, rel, versions=SUPPORTED_VERSIONS):
     findings = []
     for rule in RULES:
         findings.extend(rule(rel, tree, tokens, versions))
+
+    # R1: a coding cookie naming a non-text codec (rot13, base64, ...)
+    # decodes without error on 2.7.18, so when py2scan runs there, parso
+    # parses the file and every rule above runs normally - nothing in
+    # that path ever sees a reason to flag it. But Python 3 rejects the
+    # cookie before parsing even starts, on every judged version, so
+    # free of blockers is wrong there regardless of which host is
+    # running py2scan right now.
+    bad_cookie = bad_coding_cookie(source)
+    if bad_cookie is not None:
+        findings.append(Finding(
+            rel, 1, "PY3-BAD-ENCODING-COOKIE", "blocker",
+            "coding: %s; not a text encoding, Python 3 cannot decode the "
+            "source at all" % bad_cookie, versions))
 
     # R1/R9: the live compile() backstop only ever ADDS a blocker, never
     # removes one a static rule already found, and it only speaks for the

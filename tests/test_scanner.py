@@ -7,6 +7,7 @@ import tempfile
 import pytest
 
 from py2scan.scanner import _run_extra_backstop, scan
+from py2scan.versions import SUPPORTED_VERSIONS
 
 V2 = ((3, 6), (3, 13), (3, 14))
 
@@ -140,5 +141,32 @@ def test_non_utf8_filename_does_not_crash_the_scan():
         assert len(result.files) == 2
         assert len(result.findings) == 1
         assert result.findings[0].rule == "PY3-PRINT"
+    finally:
+        shutil.rmtree(root)
+
+
+def test_nontext_coding_cookie_is_never_free_of_blockers():
+    # Real repro (independent check's hostile/rot13_cookie case): a file
+    # whose coding cookie names rot13 decodes without error on 2.7.18
+    # (str and bytes are the same type there), so parso's own parse
+    # succeeds and no rule reading the resulting tree has any reason to
+    # object - yet every judged Python 3 version refuses to decode the
+    # source at all, before parsing even starts (confirmed directly
+    # against real 3.6.15 and 3.14.9: "rot13 is not a text encoding").
+    # R1: this must never come back free of blockers for ANY judged
+    # version, regardless of which host (2.7 or 3.x) is running the scan.
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "ok.py"), "wb") as f:
+            f.write(b"x = 1\n")
+        with open(os.path.join(root, "t.py"), "wb") as f:
+            f.write(b"# -*- coding: rot13 -*-\nk = 1\n")
+        result = scan(root, jobs=1)
+        blocked_versions = set()
+        for finding in result.findings:
+            if finding.file == "t.py" and finding.severity == "blocker":
+                blocked_versions.update(finding.versions)
+        assert blocked_versions == set(SUPPORTED_VERSIONS)
+        assert [g for g in result.findings if g.file == "ok.py"] == []
     finally:
         shutil.rmtree(root)

@@ -1,10 +1,32 @@
 # -*- coding: utf-8 -*-
 """PEP 263 source-encoding detection, for displaying source lines correctly."""
+import encodings
 import re
 import sys
 
 _COOKIE_RE = re.compile(r"coding[:=]\s*([-\w.]+)")
 _BOM = b"\xef\xbb\xbf"
+
+# R1: these seven are the only codecs in the stdlib `encodings` package
+# with CodecInfo._is_text_encoding = False (confirmed identical on real
+# 3.6.15 and 3.14.9) -- they are str<->str or bytes<->bytes transforms,
+# not bytes<->text decoders. A PEP 263 coding cookie naming one of them
+# decodes without error on Python 2.7 (str and bytes are the same type
+# there, confirmed on real 2.7.18), but Python 3's source decoder rejects
+# it outright ("<name> is not a text encoding") before parsing even
+# starts, on every judged version - independent of which rot13/base64/...
+# transform it is, or of whatever content the cookie makes the rest of
+# the file decode to.
+_NONTEXT_CODEC_NAMES = frozenset(
+    encodings.normalize_encoding(name.lower()) for name in [
+        "base64_codec", "base64", "base_64",
+        "bz2_codec", "bz2",
+        "hex_codec", "hex",
+        "quopri_codec", "quopri", "quoted_printable", "quotedprintable",
+        "rot_13", "rot13",
+        "uu_codec", "uu",
+        "zlib_codec", "zip", "zlib",
+    ])
 
 
 def detect_source_encoding(raw_bytes):
@@ -23,6 +45,15 @@ def decode_source_lines(raw_bytes):
     encoding = detect_source_encoding(raw_bytes)
     text = raw_bytes.decode(encoding, "replace")
     return text.splitlines()
+
+
+def bad_coding_cookie(raw_bytes):
+    """The declared coding-cookie name, if it names one of the seven
+    non-text codecs above; None otherwise (including no cookie at all)."""
+    name = detect_source_encoding(raw_bytes)
+    if encodings.normalize_encoding(name.lower()) in _NONTEXT_CODEC_NAMES:
+        return name
+    return None
 
 
 def display_path(rel):
