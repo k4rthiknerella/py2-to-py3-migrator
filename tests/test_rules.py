@@ -228,6 +228,15 @@ def test_builtin_use_is_suppressed_for_a_parameter_name():
     assert rules(check_builtin_use, src) == []
 
 
+def test_standard_error_is_found():
+    # R10: StandardError is in 2.7's __builtin__ but absent from every
+    # judged version's builtins module (verified empirically against real
+    # 3.6.15 through 3.14.7 interpreters, identically across all of them) -
+    # it was missing from BUILTIN_NAMES, a real gap, not a design question.
+    assert rules(check_builtin_use, "class E(StandardError):\n    pass\n") \
+        == [(1, "PY3-BUILTIN")]
+
+
 def test_unrelated_builtin_is_not_found():
     assert rules(check_builtin_use, "x = len([1, 2])\n") == []
 

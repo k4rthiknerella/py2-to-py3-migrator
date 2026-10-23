@@ -213,12 +213,50 @@ Waves: none — one unit, no import graph.
   tests ran there instead and passed) — both skip counts accounted for by
   environment, not by a test that can't run anywhere.
 
+**Resolved, commit `pending`:**
+- R10 (PY3-BUILTIN half only): `BUILTIN_NAMES` was missing `StandardError`
+  — present in Python 2.7's `__builtin__`, absent from every judged
+  version's `builtins`. Verified empirically by diffing 2.7.18's
+  `__builtin__` names against `builtins` on 9 real, final-release
+  interpreters spanning the full R6 range except 3.15 (no final release
+  exists yet — see below): 3.6.15, 3.7.17 (Docker), 3.8.20, 3.9.25,
+  3.10.19, 3.11.14, 3.12.12, 3.13.12, 3.14.7 (uv-managed/Homebrew). The
+  missing-builtin set is **identical across all 9** — no name was removed
+  or reinstated between 3.6 and 3.14 that isn't already covered by the
+  existing fixed list plus `StandardError`. This means R10's substantive
+  requirement (derive from real interpreters, record the derivation) is
+  now satisfied for the full 3.6–3.14 range with a single flat set, no
+  per-version data structure needed for PY3-BUILTIN — unlike R8's
+  PY3-STDLIB half (below), builtin removals are not version-dependent
+  within 3.x; they all happened at the 2-vs-3 boundary. 1 new test
+  (`test_standard_error_is_found` in `test_rules.py`). Full suite: 105
+  passed, 2 skipped on 2.7.18; 102 passed, 5 skipped on 3.14.7. flake8
+  `--max-complexity 10` clean on both.
+
 **Still open:**
-- R6/R7/R8/R9/R10 (multi-version readiness matrix, 3.6–3.15, final-release
-  interpreters only with exact patch versions recorded, expanded PY3-STDLIB
-  and PY3-BUILTIN derivation, static-knowledge-not-runtime-dependency
-  constraint) — not started. This is the largest remaining item; it is
-  `fix`-phase work, scoped here, not assessed line-by-line yet · Size L.
+- R8 (PY3-STDLIB expansion) + R6/R7/R9 (version-selection design): real
+  removal data gathered empirically against the same 9 interpreters above
+  (identical sourcing/receipts as the R10 entry just above) — unlike
+  builtins, stdlib removals genuinely vary by version: `macurl2path`@3.7,
+  `macpath`@3.8, `dummy_threading`@3.9, `formatter`/`symbol`@3.10,
+  `binhex`@3.11, `asynchat`/`asyncore`/`distutils`/`imp`/`smtpd`@3.12, and
+  13 more in the 3.13 PEP 594 wave (`aifc`, `cgi`, `cgitb`, `chunk`,
+  `imghdr`, `lib2to3`, `mailcap`, `nntplib`, `pipes`, `sndhdr`, `sunau`,
+  `telnetlib`, `uu`, `xdrlib`) — verified monotonic (nothing removed ever
+  reappears) across all 9 real interpreters. Blindly adding these to the
+  existing flat `STDLIB_MODULES` set would make e.g. `import distutils` an
+  unconditional blocker, which is **wrong** for anyone judging against
+  3.9–3.11 (distutils still works there) and only right for 3.12+ — R8
+  cannot be implemented correctly without R6's "per-file/per-blocker
+  version applicability" existing first, so this blocks on the
+  architect's ruling (sent, awaiting reply) on: the CLI shape for
+  version-selection, and how per-finding version-applicability surfaces
+  in the JSON/text output. 3.15 has no final release yet (only an alpha,
+  3.15.0a5) — R9 says a missing judged-version interpreter must never
+  weaken a verdict, so 3.15's floor will be "at least everything confirmed
+  removed by 3.14.7" (removals are monotonic in real CPython history) with
+  no fabricated 3.15-specific additions until a primary source or a final
+  interpreter exists to check against.
 - Security advisory scanning (item 4) — not started.
 - Full systematic Python 3.0–3.14 What's New Removed/Porting sweep — not
   started; only targeted/suspected items have been checked so far (see
@@ -340,6 +378,10 @@ any other process (no pickle, cache, queue, or database).
 | 2026-10-22 | 054d2b2 | py2scan | 2.7.18→3.14 | (flake8, not a level) | `flake8 --max-complexity 10 py2scan tests` under both real interpreters, after R3 (including the closures-vs-top-level-functions complexity fix) | 0 violations of any kind, both interpreters |
 | 2026-10-22 | 70d7bd5 | py2scan | 2.7.18→3.14 | (R5) | full suite on both real interpreters after implementing R5 | `104 passed, 2 skipped` on 2.7.18 (Docker, root — 2 root-dependent tests skipped); `101 passed, 5 skipped` on 3.14.7 (non-root venv — those 2 ran and passed; same 5 `PY2_ONLY_SYNTAX` skips as before) |
 | 2026-10-22 | 70d7bd5 | py2scan | 2.7.18→3.14 | (flake8, not a level) | `flake8 --max-complexity 10 py2scan tests` under both real interpreters, after R5 | 0 violations of any kind, both interpreters |
+| 2026-10-22 | n/a (research, no code change) | py2scan | (R6/R7 interpreter inventory) | `docker pull python:3.6-slim python:3.7-slim && docker run ... python3 --version`; `uv python install 3.13.12`; resolved paths for 3.8.20/3.9.25/3.10.19/3.11.14/3.12.12/3.13.12 (uv-managed) and 3.14.7 (Homebrew, same interpreter as every prior 3.14 evidence row) | all 9 confirmed final releases (no alpha/beta/rc); exact patch versions recorded above; 3.15 confirmed to have no final release yet (`uv python list` shows only `3.15.0a5`) |
+| 2026-10-22 | n/a (research, no code change) | py2scan | (R8/R10 derivation) | a probe script run against all 9 interpreters above, each checking every 2.7.18 `__builtin__` name against that interpreter's `builtins`, and every empirically-derived 2.7.18 top-level stdlib module name (227, via `sys.builtin_module_names` + `pkgutil.iter_modules([os.path.dirname(os.__file__)])` on the real 2.7.18 Docker image) against importability on that interpreter | builtin-missing set identical across all 9 (16 names, `BUILTIN_NAMES` + `StandardError`); stdlib-missing set grows monotonically from 64 names (3.6.15) to 78 (3.14.7), confirmed no name ever reappears once removed — full breakdown in Blockers above |
+| 2026-10-22 | pending | py2scan | 2.7.18→3.14 | (R10, builtin half) | full suite on both real interpreters after adding `StandardError` to `BUILTIN_NAMES` | `105 passed, 2 skipped` on 2.7.18; `102 passed, 5 skipped` on 3.14.7 |
+| 2026-10-22 | pending | py2scan | 2.7.18→3.14 | (flake8, not a level) | `flake8 --max-complexity 10 py2scan tests` under both real interpreters | 0 violations of any kind, both interpreters |
 
 ## Decisions
 - 2026-10-22, owner: `.md`-commit exception for `MIGRATION.md` and

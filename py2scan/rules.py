@@ -115,7 +115,7 @@ def check_division(path, tree):
 BUILTIN_NAMES = frozenset([
     "unicode", "basestring", "long", "xrange", "raw_input", "unichr",
     "execfile", "reduce", "file", "cmp", "reload", "apply", "buffer",
-    "intern", "coerce",
+    "intern", "coerce", "StandardError",
 ])
 
 STDLIB_MODULES = frozenset([
