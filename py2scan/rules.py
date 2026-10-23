@@ -63,18 +63,6 @@ def check_backtick(path, tree):
                       "repr() function")
 
 
-def check_raise_comma(path, tree):
-    for node in _nodes(tree, ast.Raise):
-        # Python 3's ast.Raise has no .inst/.type at all (it's exc/cause
-        # instead) because the comma form can't parse there in the first
-        # place; getattr keeps this rule a no-op on that shape rather than
-        # an AttributeError.
-        if getattr(node, "inst", None) is not None:
-            yield Finding(path, node.lineno, "PY3-RAISE-COMMA", "blocker",
-                          "raise E, value form; Python 3 only has "
-                          "raise E(value)")
-
-
 def check_dict_iter(path, tree):
     iter_attrs = frozenset(["iteritems", "iterkeys", "itervalues", "has_key"])
     for node in _nodes(tree, ast.Call):
@@ -203,6 +191,54 @@ STDLIB_REMOVED_SINCE = {
     "pipes": "3.13", "sndhdr": "3.13", "spwd": "3.13", "sunau": "3.13",
     "telnetlib": "3.13", "uu": "3.13", "xdrlib": "3.13",
     "sre_compile": "3.15", "sre_constants": "3.15", "sre_parse": "3.15",
+}
+
+
+# A module surviving into Python 3 doesn't mean every name it exported
+# on 2.7 still does - found via AutoSteer CI against the real stdlib
+# (idlelib/CodeContext.py:13's `from sys import maxint`). Derived
+# empirically, not from memory: every `from <module> import <name>` the
+# real 2.7 stdlib actually uses (941 unique pairs, via an AST walk),
+# checked with __import__/hasattr against a real 3.14.9 for modules that
+# are NOT themselves in STDLIB_REMOVED_SINCE above - so a genuinely
+# missing name, not a casualty of its whole module being gone. All of
+# these left their module in Python 3.0, confirmed never to come back in
+# any later 3.x, so every entry here uses the same floor as judged_versions
+# can ever be asked about (3.6) rather than the real, earlier release.
+# Narrowed by hand from the full empirical diff to the names a migrating
+# application is actually likely to use: dropped private (leading-
+# underscore) modules and names, idlelib's own internal submodule
+# layout (renamed wholesale on Python 3, but nothing outside idlelib
+# itself imports those names), and platform-conditional names that
+# cannot be checked on this Linux-only test fleet either way. This only
+# covers the `from <module> import <name>` form the real repro uses -
+# `import sys; sys.maxint` (attribute access after a plain import, the
+# more common real-world spelling: 39 of the 40 real-stdlib hits for
+# sys.maxint alone are this form) is a known, separate, unclosed gap -
+# recognizing it needs tracking which name a module import bound and
+# then walking for Attribute nodes on it, the same scope check_builtin_use
+# already does for bare names, which this rule does not do yet.
+STDLIB_REMOVED_NAMES = {
+    ("sys", "maxint"): "3.6",
+    ("itertools", "imap"): "3.6", ("itertools", "izip"): "3.6",
+    ("itertools", "ifilter"): "3.6", ("itertools", "ifilterfalse"): "3.6",
+    ("string", "join"): "3.6", ("string", "split"): "3.6",
+    ("string", "strip"): "3.6", ("string", "rstrip"): "3.6",
+    ("string", "find"): "3.6", ("string", "rfind"): "3.6",
+    ("string", "lower"): "3.6", ("string", "expandtabs"): "3.6",
+    ("types", "StringType"): "3.6", ("types", "DictType"): "3.6",
+    ("types", "ListType"): "3.6", ("types", "TupleType"): "3.6",
+    ("types", "ClassType"): "3.6", ("types", "InstanceType"): "3.6",
+    ("urllib", "quote"): "3.6", ("urllib", "unquote"): "3.6",
+    ("urllib", "getproxies"): "3.6", ("urllib", "proxy_bypass"): "3.6",
+    ("urllib", "splittype"): "3.6", ("urllib", "splithost"): "3.6",
+    ("urllib", "splitport"): "3.6", ("urllib", "splituser"): "3.6",
+    ("urllib", "splitpasswd"): "3.6", ("urllib", "splitattr"): "3.6",
+    ("urllib", "splitvalue"): "3.6", ("urllib", "splittag"): "3.6",
+    ("urllib", "toBytes"): "3.6", ("urllib", "unwrap"): "3.6",
+    ("urllib", "url2pathname"): "3.6", ("urllib", "addinfourl"): "3.6",
+    ("urllib", "ftpwrapper"): "3.6", ("urllib", "localhost"): "3.6",
+    ("warnings", "warnpy3k"): "3.6",
 }
 
 
@@ -500,6 +536,21 @@ def _stdlib_import_finding(path, lineno, name, severity, judged_versions):
         versions=applicable)
 
 
+def _stdlib_name_finding(path, lineno, module, name, severity,
+                         judged_versions):
+    removed_since = STDLIB_REMOVED_NAMES.get((module, name))
+    if removed_since is None:
+        return None
+    applicable = _applicable_versions(removed_since, judged_versions)
+    if not applicable:
+        return None
+    return Finding(
+        path, lineno, "PY3-STDLIB", severity,
+        "import of %s.%s; removed on Python %s" % (
+            module, name, removed_since),
+        versions=applicable)
+
+
 def check_stdlib_import(path, tree, judged_versions=ALL_TARGET_VERSIONS):
     guarded = _import_error_guarded_imports(tree)
     for node in _nodes(tree, ast.Import):
@@ -516,9 +567,16 @@ def check_stdlib_import(path, tree, judged_versions=ALL_TARGET_VERSIONS):
                 path, node.lineno, node.module, severity, judged_versions)
             if finding is not None:
                 yield finding
+                continue
+            for alias in node.names:
+                finding = _stdlib_name_finding(
+                    path, node.lineno, node.module, alias.name, severity,
+                    judged_versions)
+                if finding is not None:
+                    yield finding
 
 
-AST_RULES = [check_print, check_exec, check_backtick, check_raise_comma,
+AST_RULES = [check_print, check_exec, check_backtick,
              check_dict_iter, check_metaclass, check_division,
              check_builtin_use]
 
@@ -587,6 +645,43 @@ def check_long_suffix(path, tokens):
             prev_end = prev_value = None
 
 
+def check_raise_comma(path, tokens):
+    # Was AST-based (ast.Raise.inst, set only by the comma form) until
+    # AutoSteer CI found 741 PY3-RAISE-COMMA findings lost on a 3.14
+    # scan of the real stdlib - 100% of that rule's findings, the
+    # single largest loss of any rule (2b/R1). Unlike print and exec,
+    # raise is a real keyword on both 2 and 3, so `raise E, value`
+    # always fails ast.parse on Python 3 outright - but it tokenizes
+    # cleanly there regardless (confirmed directly), so - like
+    # check_except_comma just below, already token-based for the same
+    # reason - this needs no tree at all and now runs identically
+    # whether or not ast.parse succeeded on the running interpreter.
+    pending = False
+    depth = 0
+    for toknum, tokval, start, _end, _line in tokens:
+        if not pending:
+            if toknum == tokenize.NAME and tokval == "raise":
+                pending = True
+                depth = 0
+            continue
+        if toknum == tokenize.OP:
+            if tokval in _BRACKETS_OPEN:
+                depth += 1
+                continue
+            if tokval in _BRACKETS_CLOSE:
+                depth -= 1
+                continue
+            if depth == 0 and tokval == ",":
+                yield Finding(
+                    path, start[0], "PY3-RAISE-COMMA", "blocker",
+                    "raise E, value form; Python 3 only has "
+                    "raise E(value)")
+                pending = False
+                continue
+        if toknum == tokenize.NEWLINE:
+            pending = False
+
+
 def check_except_comma(path, tokens):
     pending = False
     depth = 0
@@ -613,6 +708,119 @@ def check_except_comma(path, tokens):
             if depth == 0 and tokval == ":":
                 pending = False
                 continue
+
+
+def _statement_starts(tokens):
+    """Indices into tokens of the first significant token of each simple
+    statement at bracket depth 0: the start of the file, or right after a
+    NEWLINE or a top-level ';'. Doesn't see a simple statement embedded
+    after a compound-statement colon on the same physical line
+    (`if x: print y`) - check_print/check_exec's own AST-based detection
+    already covers that shape identically on both interpreters, so the
+    token checks below only need to add what that shape is missing."""
+    depth = 0
+    at_start = True
+    for i, tok in enumerate(tokens):
+        toknum, tokval = tok[0], tok[1]
+        if toknum in (tokenize.COMMENT, tokenize.NL, tokenize.INDENT,
+                      tokenize.DEDENT):
+            continue
+        if at_start:
+            yield i
+        at_start = False
+        if toknum == tokenize.NEWLINE:
+            at_start = True
+        elif toknum == tokenize.OP:
+            if tokval in _BRACKETS_OPEN:
+                depth += 1
+            elif tokval in _BRACKETS_CLOSE:
+                depth -= 1
+            elif tokval == ";" and depth == 0:
+                at_start = True
+
+
+def _next_significant(tokens, i):
+    """The index at or after i of the first token that isn't a COMMENT
+    or NL - None past the end."""
+    while i < len(tokens) and tokens[i][0] in (
+            tokenize.COMMENT, tokenize.NL):
+        i += 1
+    return i if i < len(tokens) else None
+
+
+def _matching_close(tokens, i):
+    """Index just past the bracket at tokens[i] (which must be an
+    opening bracket) that matches its close - None if it never closes."""
+    depth = 0
+    while i < len(tokens):
+        toknum, tokval = tokens[i][0], tokens[i][1]
+        if toknum == tokenize.OP:
+            if tokval in _BRACKETS_OPEN:
+                depth += 1
+            elif tokval in _BRACKETS_CLOSE:
+                depth -= 1
+                if depth == 0:
+                    return i + 1
+        i += 1
+    return None
+
+
+def check_print_redirect(path, tokens):
+    """check_print's ast.Print-based detection is correct and complete on
+    Python 2.7, but a true no-op on Python 3 (see its comment) - right
+    for every print-statement shape that fails to parse under Python 3
+    at all. One shape doesn't fail: `print >> file, ...`. Once print is
+    an ordinary name instead of a keyword, that's just a right-shift
+    expression followed by a tuple - entirely legal Python 3, parsing to
+    something silently different instead of raising. Found against the
+    real stdlib (abc.py's _dump_registry) via AutoSteer CI comparing a
+    scan run under 2.7.18 against the same scan run under 3.14.9. Tokens
+    lex the same way regardless of whether print is a keyword, so this
+    needs no AST and works identically on every interpreter - gated on
+    _PRINT_TYPE so it adds nothing on 2.7, where check_print already
+    reports this shape; it only fills the Python-3 blind spot."""
+    if _PRINT_TYPE is not None:
+        return
+    tokens = list(tokens)
+    for i in _statement_starts(tokens):
+        if tokens[i][0] != tokenize.NAME or tokens[i][1] != "print":
+            continue
+        j = _next_significant(tokens, i + 1)
+        if (j is not None and tokens[j][0] == tokenize.OP
+                and tokens[j][1] == ">>"):
+            yield Finding(
+                path, tokens[i][2][0], "PY3-PRINT", "blocker",
+                "print statement; Python 3 has only the print() function")
+
+
+def check_exec_in_clause(path, tokens):
+    """Parallel case to check_print_redirect, for exec's `in globals[,
+    locals]` clause: once exec is an ordinary name, `exec(code) in g`
+    parses as a legal Python 3 containment expression (call exec(code),
+    discard its None result, check membership in g) instead of raising.
+    Bare `exec code in g` (no parens) already fails to parse under
+    Python 3 on its own - two adjacent names with no operator between
+    them - and is caught by PY3-PARSE directly, so only the parenthesized
+    shape needs this."""
+    if _EXEC_TYPE is not None:
+        return
+    tokens = list(tokens)
+    for i in _statement_starts(tokens):
+        if tokens[i][0] != tokenize.NAME or tokens[i][1] != "exec":
+            continue
+        j = _next_significant(tokens, i + 1)
+        if j is None:
+            continue
+        after = None
+        if tokens[j][0] == tokenize.OP and tokens[j][1] in _BRACKETS_OPEN:
+            end = _matching_close(tokens, j)
+            if end is not None:
+                after = _next_significant(tokens, end)
+        if (after is not None and tokens[after][0] == tokenize.NAME
+                and tokens[after][1] == "in"):
+            yield Finding(
+                path, tokens[i][2][0], "PY3-EXEC-STMT", "blocker",
+                "exec statement; Python 3 has only the exec() function")
 
 
 def check_ur_string(path, tokens):
@@ -756,8 +964,75 @@ def check_unicode_escape(path, tokens):
                 "under Python 2.7 but a SyntaxError under Python 3")
 
 
-TOKEN_RULES = [check_ne_op, check_octal, check_long_suffix, check_except_comma,
-               check_ur_string, check_unicode_escape]
+def _col_and_altcol(line):
+    """(col, altcol): the same leading-whitespace column CPython's own
+    tokenizer computes two ways - col with a tab advancing to the next
+    multiple of 8 (the real rule, what an indent/dedent decision
+    normally uses), altcol with a tab counting as a single column, the
+    same as a space. check_ambiguous_indentation below flags whenever
+    the two disagree about whether a line indents, dedents or matches
+    its enclosing block - exactly Python 3's own TabError check."""
+    col = altcol = 0
+    for ch in line:
+        if ch == "\t":
+            col = (col // 8 + 1) * 8
+            altcol += 1
+        elif ch == " ":
+            col += 1
+            altcol += 1
+        else:
+            break
+    return col, altcol
+
+
+def check_ambiguous_indentation(path, tokens):
+    """Python 3 has rejected this, as TabError, since 3.0; Python 2.7's
+    own tokenizer and compiler never check it by default (only -tt
+    makes the real CPython binary strict, and 2.7's tokenize module
+    does not implement the altcol side of this at all) - so the real
+    stdlib can and does ship files 2.7 accepts silently that every real
+    Python 3 rejects outright (confirmed directly: a one-tab line
+    followed by an eight-space line at the same real indentation level
+    parses on 2.7.18, and raises TabError on 3.14.9's tokenizer alone,
+    before the parser even runs). A straight port of CPython's own
+    dual-stack check: every logical line's leading whitespace is
+    measured two ways, col and altcol from _col_and_altcol above: a
+    real indent, dedent or same-level match must agree under both, or
+    it is exactly what makes Python 3 raise TabError. Tokenizing this
+    file must itself have already succeeded for this rule to run at
+    all - which 2.7.18 always does for an ambiguous file like this, but
+    3.x's own tokenizer does not, so this rule's own Python-3-side
+    blind spot is the same, already-accepted kind scanner.scan_file's
+    docstring describes: a token-based rule can add nothing once
+    tokenizing itself fails on the running interpreter."""
+    tokens = list(tokens)
+    indents = [(0, 0)]
+    for i in _statement_starts(tokens):
+        if tokens[i][0] in (tokenize.NEWLINE, tokenize.ENDMARKER):
+            continue
+        col, altcol = _col_and_altcol(tokens[i][4])
+        while len(indents) > 1 and indents[-1][0] > col:
+            indents.pop()
+        top_col, top_altcol = indents[-1]
+        if col > top_col:
+            if altcol <= top_altcol:
+                yield Finding(
+                    path, tokens[i][2][0], "PY3-TAB-SPACE", "blocker",
+                    "indentation mixes tabs and spaces in a way that is "
+                    "ambiguous; Python 3 always rejects this, as "
+                    "TabError")
+            indents.append((col, altcol))
+        elif altcol != top_altcol:
+            yield Finding(
+                path, tokens[i][2][0], "PY3-TAB-SPACE", "blocker",
+                "indentation mixes tabs and spaces in a way that is "
+                "ambiguous; Python 3 always rejects this, as TabError")
+
+
+TOKEN_RULES = [check_ne_op, check_octal, check_long_suffix, check_raise_comma,
+               check_except_comma, check_ur_string, check_unicode_escape,
+               check_print_redirect, check_exec_in_clause,
+               check_ambiguous_indentation]
 
 # Parallel to VERSION_AWARE_AST_RULES above: scanner.scan_file passes
 # judged_versions to these (and only these) token rules too.

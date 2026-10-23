@@ -11,12 +11,14 @@ from py2scan import rules as rules_module
 from py2scan.findings import Finding
 from py2scan.scanner import _tokenize, scan_file
 from py2scan.rules import (
+    check_ambiguous_indentation,
     check_backtick,
     check_builtin_use,
     check_dict_iter,
     check_division,
     check_except_comma,
     check_exec,
+    check_exec_in_clause,
     check_long_suffix,
     check_metaclass,
     check_ne_op,
@@ -24,6 +26,7 @@ from py2scan.rules import (
     check_non_text_coding_declaration,
     check_octal,
     check_print,
+    check_print_redirect,
     check_raise_comma,
     check_stdlib_import,
     check_unicode_escape,
@@ -66,6 +69,53 @@ def test_print_function_is_not_found():
 @PY2_ONLY_SYNTAX
 def test_exec_statement_is_found():
     assert rules(check_exec, "exec 'x = 1'\n") == [(1, "PY3-EXEC-STMT")]
+
+
+# check_print_redirect/check_exec_in_clause are the Python-3-side mirror
+# of PY2_ONLY_SYNTAX above: `print >> f, x` and `exec(code) in g` are
+# Python-2-only in effect, but - unlike print/exec/backtick/raise-comma -
+# they don't fail to parse under Python 3 at all (print and exec are
+# ordinary names there, not keywords), so they can only ever be found on
+# Python 3, where check_print/check_exec's own ast.Print/ast.Exec
+# detection is a no-op (see rules.py).
+PY3_ONLY_PRINT_EXEC_AMBIGUITY = pytest.mark.skipif(
+    sys.version_info[0] < 3,
+    reason="a no-op on 2.7, where check_print/check_exec already cover "
+           "this shape via ast.Print/ast.Exec")
+
+
+@PY3_ONLY_PRINT_EXEC_AMBIGUITY
+def test_print_redirect_is_found():
+    assert token_rules(check_print_redirect, "print >> f, x\n") == \
+        [(1, "PY3-PRINT")]
+
+
+@PY3_ONLY_PRINT_EXEC_AMBIGUITY
+def test_print_call_is_not_found_by_redirect_check():
+    assert token_rules(check_print_redirect, "print(x)\n") == []
+
+
+@PY3_ONLY_PRINT_EXEC_AMBIGUITY
+def test_print_statement_is_not_found_by_redirect_check():
+    # No `(`/`>>` immediately after print at all - PY3-PARSE's job on a
+    # real Python 3 scan, not this supplement's.
+    assert token_rules(check_print_redirect, "print x\n") == []
+
+
+@PY3_ONLY_PRINT_EXEC_AMBIGUITY
+def test_exec_in_clause_is_found():
+    assert token_rules(check_exec_in_clause, "exec(code) in g\n") == \
+        [(1, "PY3-EXEC-STMT")]
+
+
+@PY3_ONLY_PRINT_EXEC_AMBIGUITY
+def test_exec_call_with_tuple_args_is_not_found_by_in_clause_check():
+    assert token_rules(check_exec_in_clause, "exec(code, g)\n") == []
+
+
+@PY3_ONLY_PRINT_EXEC_AMBIGUITY
+def test_exec_call_alone_is_not_found_by_in_clause_check():
+    assert token_rules(check_exec_in_clause, "exec(code)\n") == []
 
 
 def test_ne_op_is_found():
@@ -347,23 +397,33 @@ def test_backtick_is_found():
     assert rules(check_backtick, "y = `x`\n") == [(1, "PY3-BACKTICK")]
 
 
-@PY2_ONLY_SYNTAX
 def test_raise_comma_is_found():
-    assert rules(check_raise_comma, "raise E, v\n") == [(1, "PY3-RAISE-COMMA")]
+    # Token-based (see rules.py): found on every interpreter, not just
+    # 2.7 - unlike print/exec/backtick, raise is a real keyword on both
+    # 2 and 3, so this still fails to ast.parse on Python 3, but that no
+    # longer matters to this rule at all.
+    assert token_rules(check_raise_comma, "raise E, v\n") == \
+        [(1, "PY3-RAISE-COMMA")]
 
 
-@PY2_ONLY_SYNTAX
 def test_raise_comma_with_traceback_is_found():
-    assert rules(check_raise_comma, "raise E, v, tb\n") == \
+    assert token_rules(check_raise_comma, "raise E, v, tb\n") == \
         [(1, "PY3-RAISE-COMMA")]
 
 
 def test_raise_without_comma_is_not_found():
-    assert rules(check_raise_comma, "raise E\n") == []
+    assert token_rules(check_raise_comma, "raise E\n") == []
 
 
 def test_raise_call_is_not_found():
-    assert rules(check_raise_comma, "raise E(v)\n") == []
+    assert token_rules(check_raise_comma, "raise E(v)\n") == []
+
+
+def test_raise_comma_inside_brackets_is_not_a_false_trigger():
+    # A comma inside a parenthesized call between "raise" and its own
+    # top-level comma must not be mistaken for the comma form.
+    assert token_rules(
+        check_raise_comma, "raise E(a, b), v\n") == [(1, "PY3-RAISE-COMMA")]
 
 
 def test_dict_iteritems_is_found():
@@ -648,6 +708,48 @@ def test_stdlib_import_covers_the_remaining_2a_gaps():
         assert findings[0].severity == "blocker"
 
 
+def test_stdlib_import_from_covers_a_removed_name_in_a_surviving_module():
+    # AutoSteer CI repro, stdlib idlelib/CodeContext.py line 13:
+    # `from sys import maxint` got no finding at all - sys itself is not
+    # in STDLIB_REMOVED_SINCE (it never left), but the name maxint did,
+    # in 3.0. STDLIB_REMOVED_NAMES is the (module, name) - level list
+    # that catches this; check_stdlib_import's ImportFrom handling now
+    # checks it whenever the module itself isn't already flagged.
+    tree = ast.parse("from sys import maxint as INFINITY\n")
+    findings = list(check_stdlib_import("m.py", tree))
+    assert len(findings) == 1
+    assert findings[0].rule == "PY3-STDLIB"
+    assert findings[0].severity == "blocker"
+
+
+def test_stdlib_import_from_a_surviving_name_is_not_found():
+    tree = ast.parse("from sys import argv\n")
+    assert list(check_stdlib_import("m.py", tree)) == []
+
+
+def test_stdlib_attribute_access_after_a_plain_import_is_a_known_gap():
+    # Documented, not fixed: STDLIB_REMOVED_NAMES only covers the
+    # `from <module> import <name>` form the real repro above uses.
+    # `import sys; sys.maxint` - the more common real-world spelling
+    # (39 of 40 real-stdlib sys.maxint hits are this form, not
+    # ImportFrom) - needs tracking which name a plain import bound and
+    # then walking for Attribute access on it, which this rule does not
+    # do. Pinned here so a future fix changes this assertion, not
+    # silently regresses it.
+    tree = ast.parse("import sys\nx = sys.maxint\n")
+    assert list(check_stdlib_import("m.py", tree)) == []
+
+
+def test_stdlib_import_from_an_already_removed_module_is_not_doubled():
+    # The module-level and name-level checks must not both fire for the
+    # same ImportFrom - check_stdlib_import skips the name-level check
+    # once the module itself is already flagged.
+    tree = ast.parse("from ConfigParser import RawConfigParser\n")
+    findings = list(check_stdlib_import("m.py", tree))
+    assert len(findings) == 1
+    assert findings[0].message.startswith("import of ConfigParser;")
+
+
 def severities(fn, source):
     return [(f.rule, f.severity) for f in fn("m.py", ast.parse(source))]
 
@@ -741,3 +843,41 @@ def test_adding_a_rule_touches_at_most_two_files():
         rules_module.AST_RULES.remove(check_toy_rule)
     assert problem is None
     assert [finding.rule for finding in findings] == ["PY3-TOY-RULE-FOR-TEST"]
+
+
+@PY2_ONLY_SYNTAX
+def test_ambiguous_tab_space_indentation_is_found():
+    # Confirmed directly against both real interpreters: a one-tab line
+    # followed by an eight-space line at the same real (tabsize-8)
+    # indentation level parses on 2.7.18 - 2.7's tokenizer and compiler
+    # never check this - and raises TabError on 3.14.9's tokenizer
+    # alone, before the parser even runs. Like PY2_ONLY_SYNTAX's other
+    # cases, this input can never reach check_ambiguous_indentation on
+    # Python 3 at all: _tokenize itself raises first.
+    src = "if True:\n\tx = 1\n        y = 2\n"
+    assert token_rules(check_ambiguous_indentation, src) == \
+        [(3, "PY3-TAB-SPACE")]
+
+
+def test_consistent_tabs_are_not_found():
+    src = "if True:\n\tx = 1\n\ty = 2\n"
+    assert token_rules(check_ambiguous_indentation, src) == []
+
+
+def test_consistent_spaces_are_not_found():
+    src = "if True:\n    x = 1\n    y = 2\n"
+    assert token_rules(check_ambiguous_indentation, src) == []
+
+
+def test_consistent_tabs_across_a_dedent_are_not_found():
+    src = "def f():\n\tif True:\n\t\tx = 1\n\treturn x\n"
+    assert token_rules(check_ambiguous_indentation, src) == []
+
+
+def test_different_consistent_styles_in_sibling_blocks_are_not_found():
+    src = "def f():\n\tx = 1\n\ndef g():\n    y = 2\n"
+    assert token_rules(check_ambiguous_indentation, src) == []
+
+
+def test_no_indentation_at_all_is_not_found():
+    assert token_rules(check_ambiguous_indentation, "x = 1\ny = 2\n") == []

@@ -22,7 +22,7 @@ Options:
   `severity: {rule id: blocker|warning}`; readiness and the exit code follow it.
 - `--jobs N` - scan files in parallel (default 4); output is identical for any N.
 
-Status: 17 rules.
+Status: 19 rules.
 
 | Rule | Severity |
 |---|---|
@@ -40,6 +40,8 @@ Status: 17 rules.
 | PY3-UR-STRING | blocker |
 | PY3-UNICODE-ESCAPE | blocker |
 | PY3-NESTING-DEPTH | blocker (per judged version: real nesting limits for (), [] and {} vary by version) |
+| PY3-NON-TEXT-CODING | blocker |
+| PY3-TAB-SPACE | blocker |
 | PY3-DIVISION | warning |
 | PY3-METACLASS | warning |
-| PY3-PARSE | blocker (exclusive: a file that fails to parse gets only this finding) |
+| PY3-PARSE | blocker (the running interpreter's own parser rejected the file outright; other rules whose own input - source bytes, or a token stream - is still available report alongside it, so this is not always the only finding) |

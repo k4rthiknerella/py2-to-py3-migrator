@@ -104,13 +104,34 @@ def test_backtick_is_a_blocker_on_both_interpreters():
     _assert_blocker_on_both_interpreters(b"y = `x`\n", "PY3-BACKTICK")
 
 
+def _assert_raise_comma_is_a_blocker(source):
+    # check_raise_comma is token-based (2b/R1, AutoSteer CI: 741 lost
+    # findings, recovered) - raise E, v still fails ast.parse on Python
+    # 3 (raise is a real keyword there, unlike print/exec), but now also
+    # tokenizes and gets its own PY3-RAISE-COMMA finding there too,
+    # alongside the pre-existing PY3-PARSE - not instead of it.
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "m.py"), "wb") as f:
+            f.write(source)
+        findings, problem = scan_file(root, "m.py")
+    finally:
+        shutil.rmtree(root)
+    assert problem is None
+    rules = sorted(f.rule for f in findings)
+    if sys.version_info[0] >= 3:
+        assert rules == ["PY3-PARSE", "PY3-RAISE-COMMA"]
+    else:
+        assert rules == ["PY3-RAISE-COMMA"]
+    assert all(f.severity == "blocker" for f in findings)
+
+
 def test_raise_comma_is_a_blocker_on_both_interpreters():
-    _assert_blocker_on_both_interpreters(b"raise E, v\n", "PY3-RAISE-COMMA")
+    _assert_raise_comma_is_a_blocker(b"raise E, v\n")
 
 
 def test_raise_comma_with_traceback_is_a_blocker_on_both_interpreters():
-    _assert_blocker_on_both_interpreters(
-        b"raise E, v, tb\n", "PY3-RAISE-COMMA")
+    _assert_raise_comma_is_a_blocker(b"raise E, v, tb\n")
 
 
 def test_except_comma_is_byte_identical_across_interpreters():
@@ -524,6 +545,15 @@ def test_deeply_nested_expression_is_a_parse_blocker_not_a_crash():
     # recursion limit would trigger a RecursionError; Python 3's PEG
     # parser instead raises SyntaxError ("too many nested parentheses").
     # Both used to propagate uncaught and crash the whole scan.
+    #
+    # Tokenizing 3000 levels deep has no such stack limit on 2.7.18
+    # (only the parser does), so there this also gets a second, more
+    # specific finding from check_nesting_depth - scanner.scan_file now
+    # runs TOKEN_RULES whenever tokenizing succeeds, independent of
+    # whether ast.parse did (2b/R1, AutoSteer CI). On 3.9+, the
+    # tokenizer itself shares the parser's 200-deep limit (confirmed
+    # elsewhere in this suite), so 3000 levels fails to tokenize there
+    # too and only PY3-PARSE fires.
     root = tempfile.mkdtemp()
     try:
         source = b"x = " + b"(" * 3000 + b"1" + b")" * 3000 + b"\n"
@@ -533,9 +563,12 @@ def test_deeply_nested_expression_is_a_parse_blocker_not_a_crash():
     finally:
         shutil.rmtree(root)
     assert problem is None
-    assert len(findings) == 1
-    assert findings[0].rule == "PY3-PARSE"
-    assert findings[0].severity == "blocker"
+    rules = sorted(f.rule for f in findings)
+    if sys.version_info >= (3, 9):
+        assert rules == ["PY3-PARSE"]
+    else:
+        assert rules == ["PY3-NESTING-DEPTH", "PY3-PARSE"]
+    assert all(f.severity == "blocker" for f in findings)
 
 
 def test_depth_95_blocks_3_6_and_3_7_on_both_interpreters():
