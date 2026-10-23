@@ -233,7 +233,7 @@ Waves: none — one unit, no import graph.
   passed, 2 skipped on 2.7.18; 102 passed, 5 skipped on 3.14.7. flake8
   `--max-complexity 10` clean on both.
 
-**Resolved, commit `pending`:**
+**Resolved, commit `41792b8`:**
 - R8 (PY3-STDLIB expansion) + R6 (version-selection) + R7 (final-release
   interpreters, exact patch recorded) + R9 (static-knowledge, no runtime
   interpreter dependency).
@@ -449,9 +449,9 @@ any other process (no pickle, cache, queue, or database).
 | 2026-10-22 | 6f3c07c | py2scan | 2.7.18→3.14 | (flake8, not a level) | `flake8 --max-complexity 10 py2scan tests` under both real interpreters | 0 violations of any kind, both interpreters |
 | 2026-10-22 | n/a (research, no code change) | py2scan | (T10 correction of the 2026-10-22 row above) | `curl` against python.org/downloads/release/python-3150/ and devguide.python.org/versions directly (not `uv python list`, which only reports what one tool offers to install); `docker pull python:3.15-slim && docker run ... python3 --version` | Python 3.15.0 final shipped 2026-10-09, 3.15.1 (latest) shipped 2026-10-21, confirmed via the official downloads page; a real interpreter is available (Docker `python:3.15-slim` → `Python 3.15.1`) — the earlier row's "3.15 has no final release yet" was wrong |
 | 2026-10-22 | n/a (research, no code change) | py2scan | (R8/R10, 3.15.1) | the same probe script from the row above, run against the real 3.15.1 interpreter via Docker | 3 more stdlib names missing vs. 3.14.7: `sre_compile`, `sre_constants`, `sre_parse`; builtin-missing set unchanged (still the same 16 names as all 9 other interpreters) |
-| 2026-10-22 | pending | py2scan | 2.7.18→3.14 | (R6-R10 implementation) | full suite on both real interpreters after implementing `--target-version`, `STDLIB_REMOVED_SINCE`, per-finding `versions`, and per-version `readiness` | `115 passed, 2 skipped` on 2.7.18 (Docker, root); `112 passed, 5 skipped` on 3.14.7 |
-| 2026-10-22 | pending | py2scan | 2.7.18→3.14 | (flake8, not a level) | `flake8 --max-complexity 10 py2scan tests` under both real interpreters | 0 violations of any kind, both interpreters |
-| 2026-10-22 | pending | py2scan | 2.7.18→3.14 | (manual CLI smoke test) | invoked `py2scan.cli.main` directly (text/json/html) against a scan root with `import distutils` + `import urllib2` + `unicode('hi')`, with `--target-version 3.9,3.12` and with the `all` default | distutils scoped to `["3.12"]` only; urllib2/unicode scoped to every judged version; JSON `readiness` keyed by version; HTML report rendered the per-version table and per-finding Versions column without template errors; unknown `--target-version` rejected with `click.BadParameter`, exit code 2 |
+| 2026-10-22 | 41792b8 | py2scan | 2.7.18→3.14 | (R6-R10 implementation) | full suite on both real interpreters after implementing `--target-version`, `STDLIB_REMOVED_SINCE`, per-finding `versions`, and per-version `readiness` | `115 passed, 2 skipped` on 2.7.18 (Docker, root); `112 passed, 5 skipped` on 3.14.7 |
+| 2026-10-22 | 41792b8 | py2scan | 2.7.18→3.14 | (flake8, not a level) | `flake8 --max-complexity 10 py2scan tests` under both real interpreters | 0 violations of any kind, both interpreters |
+| 2026-10-22 | 41792b8 | py2scan | 2.7.18→3.14 | (manual CLI smoke test) | invoked `py2scan.cli.main` directly (text/json/html) against a scan root with `import distutils` + `import urllib2` + `unicode('hi')`, with `--target-version 3.9,3.12` and with the `all` default | distutils scoped to `["3.12"]` only; urllib2/unicode scoped to every judged version; JSON `readiness` keyed by version; HTML report rendered the per-version table and per-finding Versions column without template errors; unknown `--target-version` rejected with `click.BadParameter`, exit code 2 |
 
 ## Decisions
 - 2026-10-22, owner: `.md`-commit exception for `MIGRATION.md` and
