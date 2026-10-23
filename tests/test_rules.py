@@ -152,6 +152,34 @@ def test_builtin_shadowed_by_global_with_real_binding_is_module_wide():
     assert rules(check_builtin, src) == []
 
 
+def test_builtin_name_as_attribute_access_is_not_found():
+    # chunk.file.read(1) in real stdlib aifc.py:480: "file" here is the
+    # attribute half of a "." trailer, never a reference to the builtin.
+    assert rules(check_builtin, "x = chunk.file.read(1)\n") == []
+
+
+def test_builtin_name_as_attribute_assignment_target_is_not_found():
+    assert rules(check_builtin, "self.buffer = []\n") == []
+
+
+def test_builtin_name_as_keyword_argument_name_is_not_found():
+    # print(x, file=y): "file" here is the name half of a call's keyword
+    # argument, not a reference to anything in scope.
+    assert rules(check_builtin, "foo(x, file=y)\n") == []
+
+
+def test_builtin_name_as_keyword_argument_value_is_still_found():
+    # the VALUE side of a keyword argument is an ordinary reference and
+    # must still be flagged if it names a builtin.
+    assert rules(check_builtin, "foo(x=unicode('a'))\n") == [(1, "PY3-BUILTIN")]
+
+
+def test_builtin_call_is_still_found_next_to_an_attribute_of_the_same_name():
+    # a real call to the builtin must still be flagged even in a file that
+    # also uses the same name as an attribute elsewhere on the same line.
+    assert rules(check_builtin, "x = file(chunk.file)\n") == [(1, "PY3-BUILTIN")]
+
+
 def test_stdlib_import_is_found():
     assert rules(check_stdlib, "import urllib2\n") == [(1, "PY3-STDLIB")]
 

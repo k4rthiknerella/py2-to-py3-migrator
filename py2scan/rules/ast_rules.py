@@ -570,9 +570,42 @@ def _dotted_as_bound_leaves(node):
                 yield leaf
 
 
-def check_builtin(path, tree, tokens, versions):
-    target_leaves, local_by_func, globals_by_func, module_level = _collect_scopes(tree)
+def _is_attribute_name(leaf):
+    """True for the "file" in "chunk.file": a name leaf that is the
+    attribute half of a trailer ("." name), not a reference to anything
+    in scope at all - obj.file, obj.buffer, obj.cmp(...) etc. never
+    touch the builtin of the same name."""
+    parent = leaf.parent
+    return (parent is not None and parent.type == "trailer"
+            and getattr(parent.children[0], "value", None) == ".")
 
+
+def _is_keyword_argument_name(leaf):
+    """True for the "file" in "print(x, file=y)": the name half of a
+    call's keyword argument, not a reference to anything in scope -
+    unlike a function *definition's* parameter name (already excluded
+    via target_leaves/add_param), a call's keyword argument name has no
+    binding of its own to collect."""
+    parent = leaf.parent
+    return (parent is not None and parent.type == "argument"
+            and parent.children[0] is leaf
+            and getattr(parent.children[1], "value", None) == "=")
+
+
+def _is_non_reference_use(leaf):
+    """True for any name leaf whose position never reads whatever is
+    bound to that name - an attribute name or a call's keyword argument
+    name, both syntactically identical "name" leaves to a real reference
+    but never looked up anywhere."""
+    return _is_attribute_name(leaf) or _is_keyword_argument_name(leaf)
+
+
+def _resolve_shadowing_scopes(local_by_func, globals_by_func, module_level):
+    """A `global x` declaration inside a function that also assigns x
+    locally binds x at module scope, not function scope (CPython: the
+    global statement wins); split each function's locals into those two
+    buckets up front so check_builtin's own walk only has to look things
+    up, not compute them."""
     module_bound = set(module_level)
     for func, declared in globals_by_func.items():
         local = local_by_func.get(func, set())
@@ -583,10 +616,20 @@ def check_builtin(path, tree, tokens, versions):
         declared = globals_by_func.get(func, set())
         true_local_by_func[func] = local - declared
 
+    return true_local_by_func, module_bound
+
+
+def check_builtin(path, tree, tokens, versions):
+    target_leaves, local_by_func, globals_by_func, module_level = _collect_scopes(tree)
+    true_local_by_func, module_bound = _resolve_shadowing_scopes(
+        local_by_func, globals_by_func, module_level)
+
     for leaf in _walk(tree):
         if leaf.type != "name" or leaf in target_leaves:
             continue
         if leaf.value not in BUILTIN_NAMES:
+            continue
+        if _is_non_reference_use(leaf):
             continue
         shadowed = False
         func = _enclosing_funcdef(leaf)
