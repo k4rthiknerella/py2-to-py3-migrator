@@ -212,3 +212,102 @@ def test_undecodable_cookie_gives_a_host_independent_message():
                 "do not decode under the declared encoding" % cookie)
     finally:
         shutil.rmtree(root)
+
+
+def test_dangling_symlink_is_reported_not_crashed():
+    root = tempfile.mkdtemp()
+    try:
+        os.symlink("no-such-target.py", os.path.join(root, "dangling.py"))
+        result = scan(root, jobs=1)
+        assert result.incomplete
+        assert result.unreadable == [("dangling.py", "dangling symlink")]
+    finally:
+        shutil.rmtree(root)
+
+
+def test_symlink_loop_is_reported_not_crashed():
+    root = tempfile.mkdtemp()
+    try:
+        a = os.path.join(root, "a.py")
+        b = os.path.join(root, "b.py")
+        os.symlink("b.py", a)
+        os.symlink("a.py", b)
+        result = scan(root, jobs=1)
+        assert result.incomplete
+        reasons = dict(result.unreadable)
+        assert set(reasons) == set(["a.py", "b.py"])
+        for reason in reasons.values():
+            assert "too many levels of symbolic links" in reason.lower()
+    finally:
+        shutil.rmtree(root)
+
+
+def test_nul_byte_in_source_does_not_crash_the_scan():
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "nul.py"), "wb") as f:
+            f.write(b"x = 1\x00y = 2\n")
+        result = scan(root, jobs=1)
+        assert not result.incomplete
+        assert len(result.findings) == 1
+        assert result.findings[0].rule == "PY3-PARSE"
+    finally:
+        shutil.rmtree(root)
+
+
+def test_crlf_line_endings_do_not_crash_the_scan():
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "crlf.py"), "wb") as f:
+            f.write(b"print 'x'\r\ny = 1\r\n")
+        result = scan(root, jobs=1)
+        assert not result.incomplete
+        assert [g.rule for g in result.findings] == ["PY3-PRINT"]
+    finally:
+        shutil.rmtree(root)
+
+
+def test_empty_file_does_not_crash_the_scan():
+    root = tempfile.mkdtemp()
+    try:
+        open(os.path.join(root, "empty.py"), "wb").close()
+        result = scan(root, jobs=1)
+        assert not result.incomplete
+        assert result.findings == []
+    finally:
+        shutil.rmtree(root)
+
+
+def test_unrecognized_coding_declaration_is_blocked_not_crashed():
+    # A cookie naming something that is not a real codec at all (not
+    # one of bad_coding_cookie's seven, not a genuine text codec either)
+    # - undecodable_cookie's broad except clause must catch the
+    # resulting LookupError the same way it catches a decode failure.
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "bad.py"), "wb") as f:
+            f.write(b"# -*- coding: totally-bogus-not-a-codec -*-\nx = 1\n")
+        result = scan(root, jobs=1)
+        assert not result.incomplete
+        assert len(result.findings) == 1
+        assert result.findings[0].rule == "PY3-PARSE"
+        blocked = set()
+        for v in result.findings[0].versions:
+            blocked.add(v)
+        assert blocked == set(SUPPORTED_VERSIONS)
+    finally:
+        shutil.rmtree(root)
+
+
+def test_directory_named_dot_py_is_walked_not_scanned_as_a_file():
+    root = tempfile.mkdtemp()
+    try:
+        os.mkdir(os.path.join(root, "weird.py"))
+        with open(os.path.join(root, "weird.py", "inner.py"), "wb") as f:
+            f.write(b"print 'x'\n")
+        result = scan(root, jobs=1)
+        assert not result.incomplete
+        assert result.files == ["weird.py/inner.py"]
+        assert [g.rule for g in result.findings] == ["PY3-PRINT"]
+    finally:
+        shutil.rmtree(root)
