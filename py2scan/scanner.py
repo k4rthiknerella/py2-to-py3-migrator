@@ -3,7 +3,6 @@ import ast
 import functools
 import io
 import os
-import platform
 import stat
 import sys
 import tokenize
@@ -13,7 +12,8 @@ from concurrent.futures import ProcessPoolExecutor
 from py2scan import config as config_module
 from py2scan.findings import Finding
 from py2scan.rules import (
-    ALL_TARGET_VERSIONS, AST_RULES, TOKEN_RULES, VERSION_AWARE_AST_RULES,
+    ALL_TARGET_VERSIONS, AST_RULES, SOURCE_RULES, TOKEN_RULES,
+    VERSION_AWARE_AST_RULES, VERSION_AWARE_TOKEN_RULES,
 )
 
 
@@ -78,6 +78,21 @@ def iter_py_files(root):
     return files, problems
 
 
+def _run_rules(rel, tree, tokens, source, judged_versions):
+    findings = []
+    for rule in AST_RULES:
+        findings.extend(rule(rel, tree))
+    for rule in VERSION_AWARE_AST_RULES:
+        findings.extend(rule(rel, tree, judged_versions))
+    for rule in TOKEN_RULES:
+        findings.extend(rule(rel, tokens))
+    for rule in VERSION_AWARE_TOKEN_RULES:
+        findings.extend(rule(rel, tokens, judged_versions))
+    for rule in SOURCE_RULES:
+        findings.extend(rule(rel, source))
+    return findings
+
+
 def scan_file(root, rel, judged_versions=ALL_TARGET_VERSIONS):
     """(findings, problem): problem is None, or the reason rel couldn't
     be read (R5) - in which case findings is always []. judged_versions
@@ -106,20 +121,29 @@ def scan_file(root, rel, judged_versions=ALL_TARGET_VERSIONS):
         # covers RecursionError (added in 3.5, a RuntimeError subclass)
         # for other deep-recursion failures without needing a name that
         # does not exist on Python 2.
+        #
+        # An earlier version of this message named the exact running
+        # interpreter (platform.python_version()) - reverted (R1/item 2b
+        # correction, flagged by AutoSteer CI): R1's compile guarantee
+        # never required that difference, so naming it was an unforced,
+        # avoidable divergence between a 2.7 scan's JSON and a 3.x scan's
+        # JSON for the same file. An embedded NUL byte gets its own fixed
+        # wording for the same reason - 2.7 raises TypeError here and
+        # 3.x raises SyntaxError, with genuinely different built-in
+        # message text on each side (confirmed directly), so this is the
+        # one case among the exception types above where the raw
+        # message itself, not just a decoration this code added, would
+        # otherwise differ.
         lineno = getattr(e, "lineno", None) or 1
-        message = getattr(e, "msg", None) or str(e) or type(e).__name__
+        if b"\x00" in source:
+            message = "source contains an embedded NUL byte"
+        else:
+            message = getattr(e, "msg", None) or str(e) or type(e).__name__
         findings = [Finding(rel, lineno, "PY3-PARSE", "blocker",
-                            "does not parse under Python %s: %s"
-                            % (platform.python_version(), message))]
+                            "does not parse: %s" % message)]
     else:
         tokens = _tokenize(source)
-        findings = []
-        for rule in AST_RULES:
-            findings.extend(rule(rel, tree))
-        for rule in VERSION_AWARE_AST_RULES:
-            findings.extend(rule(rel, tree, judged_versions))
-        for rule in TOKEN_RULES:
-            findings.extend(rule(rel, tokens))
+        findings = _run_rules(rel, tree, tokens, source, judged_versions)
     for finding in findings:
         if finding.versions is None:
             finding.versions = judged_versions

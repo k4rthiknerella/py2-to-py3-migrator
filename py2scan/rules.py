@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 """Rules that read a module's Python 2.7 AST or token stream."""
 import ast
+import codecs
+import io
 import re
 import tokenize
 
+from py2scan.encoding import detect_encoding
 from py2scan.findings import Finding
 
 _OLD_OCTAL = re.compile(r"^0[0-7]+$")
@@ -150,6 +153,18 @@ BUILTIN_NAMES = frozenset([
 # instead, because the test images used have no system Tcl/Tk library,
 # so Tkinter fails to import on 2.7 too, for an unrelated environment
 # reason - not a usable receipt either way.
+#
+# audioop/crypt/nis/ossaudiodev/spwd needed the same care, the other
+# direction: trying to import each directly against the slim test images
+# makes every one of them look removed as early as 3.9, well before
+# their real removal (PEP 594, Python 3.13) - because those optional C
+# extensions need a system library the slim images don't ship, for every
+# version, not because Python stopped shipping the module. Caught by
+# cross-checking sys.stdlib_module_names (3.10+, independent of whether
+# the extension actually built) directly: all five are still True at
+# 3.10 and 3.12 and False starting at 3.13, matching PEP 594 and the
+# already-correct 3.13 batch below exactly - confirming the slim images'
+# earlier-looking failures were a build artifact, not a removal.
 STDLIB_REMOVED_SINCE = {
     "BaseHTTPServer": "3.6", "Bastion": "3.6", "CGIHTTPServer": "3.6",
     "ConfigParser": "3.6", "Cookie": "3.6", "DocXMLRPCServer": "3.6",
@@ -162,26 +177,30 @@ STDLIB_REMOVED_SINCE = {
     "commands": "3.6", "compiler": "3.6", "cookielib": "3.6",
     "copy_reg": "3.6", "dbhash": "3.6", "dircache": "3.6",
     "dumbdbm": "3.6", "dummy_thread": "3.6", "exceptions": "3.6",
-    "fpformat": "3.6", "hotshot": "3.6", "htmlentitydefs": "3.6",
+    "fpformat": "3.6", "future_builtins": "3.6", "gdbm": "3.6",
+    "hotshot": "3.6", "htmlentitydefs": "3.6",
     "htmllib": "3.6", "httplib": "3.6", "ihooks": "3.6", "imputil": "3.6",
+    "linuxaudiodev": "3.6",
     "markupbase": "3.6", "md5": "3.6", "mhlib": "3.6", "mimetools": "3.6",
     "mimify": "3.6", "multifile": "3.6", "mutex": "3.6", "new": "3.6",
     "os2emxpath": "3.6", "popen2": "3.6", "posixfile": "3.6",
     "repr": "3.6", "rexec": "3.6", "rfc822": "3.6", "robotparser": "3.6",
     "sets": "3.6", "sgmllib": "3.6", "sha": "3.6", "sre": "3.6",
-    "statvfs": "3.6", "stringold": "3.6", "sunaudio": "3.6",
+    "statvfs": "3.6", "stringold": "3.6", "strop": "3.6", "sunaudio": "3.6",
     "thread": "3.6", "toaiff": "3.6", "urllib2": "3.6", "urlparse": "3.6",
     "user": "3.6", "whichdb": "3.6", "xmllib": "3.6", "xmlrpclib": "3.6",
     "macurl2path": "3.7",
     "macpath": "3.8",
     "dummy_threading": "3.9",
-    "formatter": "3.10", "symbol": "3.10",
+    "formatter": "3.10", "parser": "3.10", "symbol": "3.10",
     "binhex": "3.11",
     "asynchat": "3.12", "asyncore": "3.12", "distutils": "3.12",
     "imp": "3.12", "smtpd": "3.12",
-    "aifc": "3.13", "cgi": "3.13", "cgitb": "3.13", "chunk": "3.13",
+    "aifc": "3.13", "audioop": "3.13", "cgi": "3.13", "cgitb": "3.13",
+    "chunk": "3.13", "crypt": "3.13",
     "imghdr": "3.13", "lib2to3": "3.13", "mailcap": "3.13",
-    "nntplib": "3.13", "pipes": "3.13", "sndhdr": "3.13", "sunau": "3.13",
+    "nis": "3.13", "nntplib": "3.13", "ossaudiodev": "3.13",
+    "pipes": "3.13", "sndhdr": "3.13", "spwd": "3.13", "sunau": "3.13",
     "telnetlib": "3.13", "uu": "3.13", "xdrlib": "3.13",
     "sre_compile": "3.15", "sre_constants": "3.15", "sre_parse": "3.15",
 }
@@ -321,17 +340,43 @@ def _builtin_use_in_name(node, scope_chain, module_bound, path):
             "%s; removed or changed on Python 3" % node.id)
 
 
+def _default_value_exprs(arguments_node):
+    """Every default-value expression an ast.arguments node carries -
+    real Python evaluates these in the enclosing scope, at def time, not
+    the function's own (confirmed via a real stdlib miss, R3/R10:
+    json/encoder.py's `basestring=basestring` and `long=long`, a hand-
+    optimization that binds a builtin name to a same-named parameter -
+    the parameter's own shadowing must not reach its own default
+    value, or Python 3's real NameError at def time goes undetected)."""
+    exprs = list(getattr(arguments_node, "defaults", None) or [])
+    kw_defaults = getattr(arguments_node, "kw_defaults", None) or []
+    exprs.extend(d for d in kw_defaults if d is not None)
+    return exprs
+
+
 def _builtin_use_in_function(node, scope_chain, module_bound, path):
     local_bound, declared_globals = _own_bindings_and_globals(node.body)
     shadow = (local_bound - declared_globals) | _param_names(node.args)
     new_chain = (shadow,) + scope_chain
-    for child in ast.iter_child_nodes(node):
-        for finding in _builtin_use_walk(child, new_chain, module_bound, path):
+    for default in _default_value_exprs(node.args):
+        for finding in _builtin_use_walk(
+                default, scope_chain, module_bound, path):
+            yield finding
+    for decorator in getattr(node, "decorator_list", None) or []:
+        for finding in _builtin_use_walk(
+                decorator, scope_chain, module_bound, path):
+            yield finding
+    for stmt in node.body:
+        for finding in _builtin_use_walk(stmt, new_chain, module_bound, path):
             yield finding
 
 
 def _builtin_use_in_lambda(node, scope_chain, module_bound, path):
     new_chain = (_param_names(node.args),) + scope_chain
+    for default in _default_value_exprs(node.args):
+        for finding in _builtin_use_walk(
+                default, scope_chain, module_bound, path):
+            yield finding
     for finding in _builtin_use_walk(node.body, new_chain, module_bound, path):
         yield finding
 
@@ -366,15 +411,12 @@ def check_builtin_use(path, tree):
     as real Python - only a function creates a scope nested methods see
     through.
 
-    Known gap: a parameter default value or a decorator is real Python's
-    enclosing scope, not the function's own - this walk uses the new,
-    inner scope for both (via the generic ast.iter_child_nodes descent
-    in _builtin_use_in_function), so a builtin name shadowed only by a
-    same-named parameter could be wrongly treated as shadowed in its own
-    default value too. Rare enough (a builtin name reused as both a
-    parameter and, in the same signature, a default) that R3 doesn't call
-    it out; not fixed here to avoid losing parameter-annotation coverage
-    for little gain."""
+    A parameter default value or a decorator is real Python's enclosing
+    scope, not the function's own - _builtin_use_in_function and
+    _builtin_use_in_lambda walk both with the scope_chain passed in
+    (the enclosing one), not the new, inner one built for the body, so a
+    builtin name shadowed only by a same-named parameter is never
+    wrongly treated as shadowed in its own default value."""
     module_bound = _module_bound_names(tree)
     for finding in _builtin_use_walk(tree, (), module_bound, path):
         yield finding
@@ -622,6 +664,70 @@ def _has_invalid_unicode_escape(body):
     return False
 
 
+# R9: the deepest nesting of (), [] or {} CPython's tokenizer accepts
+# before raising, per judged target version - measured directly against
+# each version's own final release (3.6.15, 3.7.17, 3.8.20, 3.9.25,
+# 3.10.19, 3.11.14, 3.12.12, 3.13.12, 3.14.7, 3.15.1; see MIGRATION.md's
+# R9 evidence). The PEG parser (3.9 and later) shares one hardcoded,
+# bracket-shape-agnostic constant, 200, across (), [] and {} - confirmed
+# directly: the SyntaxError it raises says "too many nested parentheses"
+# even when the source nests [] or {} instead, and three final releases
+# spanning the range (3.9.25, 3.14.7, 3.15.1) all hit it at exactly the
+# same depth for every shape. The old pgen parser (2.7, 3.6-3.8) instead
+# overflows a real C stack, so its limit is a per-version resource limit,
+# not a constant - and on 3.8.20 alone it even varies by shape (98 for ()
+# and [], 104 for {}, confirmed deterministic across repeated runs):
+# using the lower of the two there is the direction that can never
+# under-report a real blocker (R1).
+PAREN_NESTING_LIMIT = {
+    "3.6": 92, "3.7": 92, "3.8": 98, "3.9": 200, "3.10": 200,
+    "3.11": 200, "3.12": 200, "3.13": 200, "3.14": 200, "3.15": 200,
+}
+
+
+def check_nesting_depth(path, tokens, judged_versions=ALL_TARGET_VERSIONS):
+    """Found via AutoSteer CI running the hostile input set against real
+    interpreters 3.6-3.15: hostile/deep_nesting (150 nested parens) parses
+    fine under Python 3.14 (its own limit is 200), so scanner.scan_file's
+    ast.parse never raises and never reaches its PY3-PARSE fallback - but
+    real Python 3.6-3.8 cannot compile it (their limit is lower), so R1's
+    never-blocker-free guarantee was violated for those versions.
+
+    This can only ever see a depth up to the running interpreter's own
+    limit: on 3.9+, the C tokenizer enforces the same hardcoded 200 as
+    the parser (confirmed directly - tokenizing depth 201 itself raises
+    TokenError("too many nested parentheses") on 3.14.7, not just
+    compile()), so scanner.scan_file's own _tokenize call would already
+    have raised before this rule ever ran. The gap this closes is
+    therefore exactly between a judged version's own, possibly lower,
+    limit and the running interpreter's limit - which is where
+    hostile/deep_nesting's 150 sits relative to 3.14 (200) and 3.6-3.8
+    (<=98)."""
+    depth = max_depth = 0
+    deepest_line = 1
+    for toknum, tokval, start, _end, _line in tokens:
+        if toknum != tokenize.OP:
+            continue
+        if tokval in _BRACKETS_OPEN:
+            depth += 1
+            if depth > max_depth:
+                max_depth = depth
+                deepest_line = start[0]
+        elif tokval in _BRACKETS_CLOSE:
+            depth -= 1
+    if max_depth == 0:
+        return
+    blocked = tuple(
+        v for v in judged_versions
+        if max_depth > PAREN_NESTING_LIMIT.get(v, float("inf")))
+    if blocked:
+        yield Finding(
+            path, deepest_line, "PY3-NESTING-DEPTH", "blocker",
+            "%d levels of nested (), [] or {}; exceeds the real parser's "
+            "limit on Python %s" % (max_depth, ", ".join(blocked)),
+            versions=blocked)
+
+
 def check_unicode_escape(path, tokens):
     # A bare string literal (no u/r/b prefix) with a \u, \U or \N{...}
     # escape that isn't valid (4 hex digits, 8 hex digits, or a non-empty
@@ -652,3 +758,61 @@ def check_unicode_escape(path, tokens):
 
 TOKEN_RULES = [check_ne_op, check_octal, check_long_suffix, check_except_comma,
                check_ur_string, check_unicode_escape]
+
+# Parallel to VERSION_AWARE_AST_RULES above: scanner.scan_file passes
+# judged_versions to these (and only these) token rules too.
+VERSION_AWARE_TOKEN_RULES = [check_nesting_depth]
+
+# Canonical codecs.lookup().name for every alias Python 3 marks
+# _is_text_encoding=False (confirmed identical on 2.7.18 and on three
+# final releases spanning the whole judged range: 3.6.15, 3.9.25,
+# 3.15.1 - see MIGRATION.md's R9 evidence). "zip" is an alias for zlib,
+# not a separate codec.
+_NON_TEXT_CODECS = frozenset([
+    "base64", "bz2", "hex", "quopri", "rot-13", "uu", "zlib"])
+
+
+def check_non_text_coding_declaration(path, source):
+    """A PEP 263 coding declaration naming a registered, non-text codec
+    (base64, bz2, hex, quopri, rot13, uu, zlib or an alias of one) is
+    decoded and compiled cleanly by Python 2.7, which runs no such check
+    at all - but every real Python 3.6-3.15 rejects it outright
+    (confirmed directly: `SyntaxError: '<name>' is not a text encoding;
+    use codecs.decode() to handle arbitrary codecs`, identical on every
+    final release tested). Found via a held-back input AutoSteer CI ran
+    against the real interpreters: `# -*- coding: rot13 -*-` decodes "k"
+    to "x", so `k = 1` becomes the valid statement `x = 1` under 2.7 -
+    R1's never-blocker-free guarantee was violated because nothing
+    existing could see this. detect_encoding raising SyntaxError (an
+    unrecognized codec name, not merely a non-text one) is the already-
+    documented item 2b divergence, not this rule's concern - this only
+    fires for a codec both interpreters can actually look up.
+
+    detect_encoding itself is lib2to3's backport on an interpreter that
+    still has lib2to3 (2.7 through 3.12) but falls back to the real
+    tokenize module starting on 3.13, where lib2to3 was removed - and
+    the real tokenize.detect_encoding runs this same non-text check
+    itself, raising LookupError (confirmed directly on 3.14.7) rather
+    than returning a name for check_non_text_coding_declaration to look
+    up. Harmless either way: scan_file's own ast.parse already raises
+    SyntaxError for the identical input on any such interpreter, so this
+    rule is never reached there in the real pipeline - only a direct
+    call (as the tests below make) can observe it."""
+    try:
+        encoding, _ = detect_encoding(io.BytesIO(source).readline)
+    except (SyntaxError, LookupError):
+        return
+    try:
+        canonical = codecs.lookup(encoding).name
+    except LookupError:
+        return
+    if canonical in _NON_TEXT_CODECS:
+        yield Finding(
+            path, 1, "PY3-NON-TEXT-CODING", "blocker",
+            "coding declaration names %s, a non-text codec; Python 3 "
+            "rejects it as a source encoding" % canonical)
+
+
+# Rules that read the raw source bytes directly, rather than the AST or
+# the token stream - currently just the one PEP 263 cookie check above.
+SOURCE_RULES = [check_non_text_coding_declaration]

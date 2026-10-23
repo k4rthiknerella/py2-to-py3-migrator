@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import errno
 import os
-import platform
 import shutil
 import sys
 import tempfile
@@ -53,6 +52,29 @@ def test_print_statement_is_a_blocker_on_both_interpreters():
     assert findings[0].severity == "blocker"
     expected_rule = "PY3-PARSE" if sys.version_info[0] >= 3 else "PY3-PRINT"
     assert findings[0].rule == expected_rule
+
+
+def test_rot13_coding_declaration_is_a_blocker_on_both_interpreters():
+    # Real held-back AutoSteer CI input: rot13-decodes to "x = 1", so it
+    # compiles cleanly under 2.7 (PY3-NON-TEXT-CODING is what catches
+    # it there) - but every real Python 3.6-3.15 rejects the coding
+    # declaration itself, so ast.parse already raises on a 3.x scan and
+    # PY3-PARSE covers it before this rule would even run. R1 holds
+    # either way; the exact rule differs, same recorded item-2b shape as
+    # print/exec/backtick/raise-comma above.
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "m.py"), "wb") as f:
+            f.write(b"# -*- coding: rot13 -*-\nk = 1\n")
+        findings, problem = scan_file(root, "m.py")
+    finally:
+        shutil.rmtree(root)
+    assert problem is None
+    assert len(findings) == 1
+    assert findings[0].severity == "blocker"
+    expected = ("PY3-PARSE" if sys.version_info[0] >= 3
+                else "PY3-NON-TEXT-CODING")
+    assert findings[0].rule == expected
 
 
 def _assert_blocker_on_both_interpreters(source, rule_on_27):
@@ -145,14 +167,18 @@ def test_a_broken_file_does_not_affect_scanning_of_others():
     assert by_file["ok.py"] == ["PY3-BUILTIN"]
 
 
-def test_parse_blocker_message_names_the_exact_running_interpreter():
-    # A real-stdlib parity scan (item 2a, MIGRATION.md) comparing this
-    # scanner's output against its pre-migration commit (0e39731) found
-    # this message used to hard-code the literal string "Python 2.7" -
-    # it now reports platform.python_version() instead (added in commit
-    # 5b75c6e, part of the straddle fix), since the exact patch version
-    # matters: the check_ne_op regression this session proved 3.14.7 and
-    # 3.14.9 can disagree about tokenizing the same source.
+def test_parse_blocker_message_does_not_name_the_running_interpreter():
+    # Reverted (R1/item 2b correction, flagged by AutoSteer CI): this
+    # message used to report platform.python_version(), on the reasoning
+    # that the exact patch version matters for debugging (the check_ne_op
+    # regression this session proved 3.14.7 and 3.14.9 can disagree about
+    # tokenizing the same source). But R1's compile guarantee never
+    # required that difference, so it was an unforced divergence between
+    # a 2.7 scan's JSON and a 3.x scan's JSON for the identical input
+    # (confirmed directly: real 2.7.18 and 3.14.7 raise the identical
+    # SyntaxError.msg, "unknown encoding: ...", for an invalid coding
+    # declaration - only this code's own version-naming wrapper made the
+    # two sides differ).
     root = tempfile.mkdtemp()
     try:
         with open(os.path.join(root, "broken.py"), "wb") as f:
@@ -162,7 +188,42 @@ def test_parse_blocker_message_names_the_exact_running_interpreter():
         shutil.rmtree(root)
     assert problem is None
     assert len(findings) == 1
-    assert ("Python %s" % platform.python_version()) in findings[0].message
+    assert "Python" not in findings[0].message
+
+
+def test_parse_blocker_message_is_byte_identical_for_an_invalid_coding():
+    # The real repro: real 2.7.18 and every real Python 3.6-3.15 raise
+    # the identical SyntaxError.msg for this (confirmed directly) - the
+    # message built here must not reintroduce a difference.
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "m.py"), "wb") as f:
+            f.write(b"# -*- coding: no-such-codec -*-\nx = 1\n")
+        findings, problem = scan_file(root, "m.py")
+    finally:
+        shutil.rmtree(root)
+    assert problem is None
+    assert len(findings) == 1
+    assert findings[0].message == (
+        "does not parse: unknown encoding: no-such-codec")
+
+
+def test_parse_blocker_message_is_stable_for_an_embedded_nul_byte():
+    # 2.7 raises TypeError here and 3.x raises SyntaxError, with
+    # genuinely different built-in message text on each side (confirmed
+    # directly) - special-cased to a fixed, interpreter-independent
+    # message instead of passing either one through.
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "m.py"), "wb") as f:
+            f.write(b"x = 1\n\x00\ny = 2\n")
+        findings, problem = scan_file(root, "m.py")
+    finally:
+        shutil.rmtree(root)
+    assert problem is None
+    assert len(findings) == 1
+    assert findings[0].message == (
+        "does not parse: source contains an embedded NUL byte")
 
 
 def test_scanner_never_executes_the_code_it_scans():
@@ -475,3 +536,54 @@ def test_deeply_nested_expression_is_a_parse_blocker_not_a_crash():
     assert len(findings) == 1
     assert findings[0].rule == "PY3-PARSE"
     assert findings[0].severity == "blocker"
+
+
+def test_depth_95_blocks_3_6_and_3_7_on_both_interpreters():
+    # AutoSteer CI repro: depth 95 exceeds 3.6's and 3.7's real limit
+    # (92) but not 2.7.18's (98) or 3.14's (200) - so ast.parse succeeds
+    # on both interpreters this project tests on, and PY3-NESTING-DEPTH
+    # must fire identically on both, unlike the 150-deep case below
+    # (which only parses on one side).
+    root = tempfile.mkdtemp()
+    try:
+        source = b"x = " + b"(" * 95 + b"1" + b")" * 95 + b"\n"
+        with open(os.path.join(root, "m.py"), "wb") as f:
+            f.write(source)
+        findings, problem = scan_file(
+            root, "m.py", ("3.6", "3.7", "3.14"))
+    finally:
+        shutil.rmtree(root)
+    assert problem is None
+    assert len(findings) == 1
+    assert findings[0].rule == "PY3-NESTING-DEPTH"
+    assert findings[0].severity == "blocker"
+    assert findings[0].versions == ("3.6", "3.7")
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 9),
+    reason="needs a running interpreter whose own parser handles depth "
+           "150 (the PEG parser, 3.9+), so ast.parse succeeds and "
+           "scan_file reaches VERSION_AWARE_TOKEN_RULES instead of its "
+           "PY3-PARSE fallback")
+def test_deep_nesting_still_blocks_versions_whose_own_limit_is_lower():
+    # AutoSteer CI, real interpreters 3.6-3.15: hostile/deep_nesting (150
+    # nested parens) parses fine under Python 3.9+ (real limit 200), so
+    # ast.parse here never raises and PY3-PARSE's blanket, every-version
+    # fallback never fires - but real Python 3.6-3.8 (real limit <= 98)
+    # cannot compile it, so R1's never-blocker-free guarantee still
+    # requires a blocker scoped to those versions specifically.
+    root = tempfile.mkdtemp()
+    try:
+        source = b"x = " + b"(" * 150 + b"1" + b")" * 150 + b"\n"
+        with open(os.path.join(root, "m.py"), "wb") as f:
+            f.write(source)
+        findings, problem = scan_file(
+            root, "m.py", ("3.8", "3.9", "3.14"))
+    finally:
+        shutil.rmtree(root)
+    assert problem is None
+    assert len(findings) == 1
+    assert findings[0].rule == "PY3-NESTING-DEPTH"
+    assert findings[0].severity == "blocker"
+    assert findings[0].versions == ("3.8",)

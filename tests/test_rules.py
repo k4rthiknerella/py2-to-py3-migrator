@@ -20,6 +20,8 @@ from py2scan.rules import (
     check_long_suffix,
     check_metaclass,
     check_ne_op,
+    check_nesting_depth,
+    check_non_text_coding_declaration,
     check_octal,
     check_print,
     check_raise_comma,
@@ -195,6 +197,129 @@ def test_invalid_unicode_name_escape_is_found():
 def test_valid_unicode_name_escape_is_not_found():
     assert token_rules(
         check_unicode_escape, "x = '\\N{BULLET}'\n") == []
+
+
+def _nested_parens(depth):
+    return "x = " + ("(" * depth) + "1" + (")" * depth) + "\n"
+
+
+def _nested_mixed_brackets(depth):
+    # depth/2 levels of "(" then "[" interleaved, closed in matching
+    # order - exercises that check_nesting_depth counts every bracket
+    # kind as one shared depth, the way the real tokenizer does (R9;
+    # confirmed directly against 2.7.18, 3.6.15 and 3.9.25-3.15.1, which
+    # all hit the exact same crossover for (), [] and {}).
+    half = depth // 2
+    return "x = " + ("([" * half) + "1" + ("])" * half) + "\n"
+
+
+def test_nesting_depth_within_every_judged_versions_limit_is_not_found():
+    tokens = _tokenize(_nested_parens(90).encode("utf-8"))
+    findings = list(check_nesting_depth(
+        "m.py", tokens, ("3.6", "3.7", "3.8", "3.9")))
+    assert findings == []
+
+
+def test_nesting_depth_at_the_exact_measured_limit_is_not_found():
+    # 3.6.15's real crossover: depth 92 compiles, 93 doesn't (MIGRATION.md
+    # R9 evidence) - the boundary itself must not false-positive.
+    tokens = _tokenize(_nested_parens(92).encode("utf-8"))
+    assert list(check_nesting_depth("m.py", tokens, ("3.6",))) == []
+
+
+def test_nesting_depth_one_past_the_measured_limit_is_found():
+    tokens = _tokenize(_nested_parens(93).encode("utf-8"))
+    findings = list(check_nesting_depth("m.py", tokens, ("3.6",)))
+    assert len(findings) == 1
+    assert findings[0].versions == ("3.6",)
+
+
+def test_nesting_depth_only_blocks_the_versions_it_exceeds():
+    # Depth 150: real 3.6-3.8 (limit <= 98) cannot compile it, real
+    # 3.9-3.15 (limit 200) can - the exact hostile/deep_nesting shape
+    # AutoSteer CI found missing a blocker for 3.6-3.8 on a 3.14 scan.
+    tokens = _tokenize(_nested_parens(150).encode("utf-8"))
+    findings = list(check_nesting_depth("m.py", tokens, ("3.8", "3.9")))
+    assert len(findings) == 1
+    assert findings[0].versions == ("3.8",)
+
+
+def test_nesting_depth_blocks_every_queried_version_when_all_are_exceeded():
+    # Depth 95 exceeds both 3.6's and 3.7's limit (92) - unlike the
+    # earlier test, every version judged_versions asks about is blocked
+    # here, not just a subset. (201, past the PEG parser's own shared
+    # 200, can't be used for this: _tokenize itself already raises
+    # TokenError for it on a 3.9+ running interpreter - confirmed
+    # directly - so check_nesting_depth would never even see it.)
+    tokens = _tokenize(_nested_parens(95).encode("utf-8"))
+    findings = list(check_nesting_depth("m.py", tokens, ("3.6", "3.7")))
+    assert len(findings) == 1
+    assert findings[0].versions == ("3.6", "3.7")
+
+
+def test_nesting_depth_counts_every_bracket_kind_as_one_shared_depth():
+    # 50 "(" interleaved with 50 "[" reaches a combined depth of 100 -
+    # above 3.8's real limit (98) even though neither bracket kind alone
+    # reaches it (50 of either, by itself, would not).
+    tokens = _tokenize(_nested_mixed_brackets(100).encode("utf-8"))
+    findings = list(check_nesting_depth("m.py", tokens, ("3.8",)))
+    assert len(findings) == 1
+    assert findings[0].versions == ("3.8",)
+
+
+def test_nesting_depth_with_no_brackets_is_not_found():
+    tokens = _tokenize(b"x = 1\n")
+    assert list(check_nesting_depth("m.py", tokens, ("3.6",))) == []
+
+
+_HAS_LIB2TO3_DETECT_ENCODING = pytest.mark.skipif(
+    sys.version_info >= (3, 13),
+    reason="py2scan.encoding falls back to the real tokenize module once "
+           "lib2to3 is gone (3.13+), and that real detect_encoding runs "
+           "this same non-text check itself and raises LookupError "
+           "before returning a name - confirmed directly on 3.14.7. "
+           "Harmless in the real pipeline: scan_file's own ast.parse "
+           "already raises for the identical input there, so this rule "
+           "is never reached outside a direct call like this one.")
+
+
+@_HAS_LIB2TO3_DETECT_ENCODING
+def test_rot13_coding_declaration_is_found():
+    # rot13-decodes to "x = 1" - a real held-back AutoSteer CI input:
+    # compiles cleanly under 2.7 (which runs no such check), rejected by
+    # every real Python 3.6-3.15 (confirmed: codecs marks it a non-text
+    # encoding there, identically on every final release tested).
+    source = b"# -*- coding: rot13 -*-\nk = 1\n"
+    findings = list(check_non_text_coding_declaration("m.py", source))
+    assert len(findings) == 1
+    assert findings[0].rule == "PY3-NON-TEXT-CODING"
+    assert findings[0].severity == "blocker"
+
+
+@_HAS_LIB2TO3_DETECT_ENCODING
+def test_every_non_text_codec_alias_is_found():
+    for name in ("base64", "bz2", "hex", "quopri", "quoted-printable",
+                 "rot13", "rot-13", "uu", "zlib", "zip"):
+        source = ("# -*- coding: %s -*-\nx = 1\n" % name).encode("ascii")
+        findings = list(check_non_text_coding_declaration("m.py", source))
+        assert len(findings) == 1, name
+
+
+def test_ordinary_coding_declaration_is_not_found():
+    source = b"# -*- coding: utf-8 -*-\nx = 1\n"
+    assert list(check_non_text_coding_declaration("m.py", source)) == []
+
+
+def test_no_coding_declaration_is_not_found():
+    assert list(check_non_text_coding_declaration("m.py", b"x = 1\n")) == []
+
+
+def test_unrecognized_codec_name_is_not_found():
+    # A codec name detect_encoding can't look up at all is the already-
+    # documented item 2b divergence (invalid_coding), not this rule's
+    # concern - it must not also raise here.
+    source = b"# -*- coding: no-such-codec -*-\nx = 1\n"
+    assert list(check_non_text_coding_declaration("m.py", source)) == []
 
 
 def test_except_as_is_not_found():
@@ -373,6 +498,42 @@ def test_class_body_binding_does_not_shadow_builtin_in_its_methods():
     assert rules(check_builtin_use, src) == [(4, "PY3-BUILTIN")]
 
 
+def test_builtin_name_as_its_own_default_value_is_found():
+    # R3/R10: AutoSteer CI repro, stdlib json/encoder.py line 276 -
+    # `def f(basestring=basestring, long=long): ...` is a real hand-
+    # optimization (turning globals into locals for speed). Real Python
+    # evaluates a default value in the *enclosing* scope at def time, so
+    # the parameter named "basestring" does not shadow the "basestring"
+    # on the right-hand side of its own default - a Python-3 NameError
+    # this rule used to miss entirely.
+    src = "def f(basestring=basestring, long=long):\n    pass\n"
+    assert rules(check_builtin_use, src) == [
+        (1, "PY3-BUILTIN"), (1, "PY3-BUILTIN")]
+
+
+def test_builtin_name_as_a_different_parameters_default_is_found():
+    src = "def f(x=long):\n    pass\n"
+    assert rules(check_builtin_use, src) == [(1, "PY3-BUILTIN")]
+
+
+def test_builtin_shadowed_by_an_unrelated_parameter_default_not_found():
+    # The parameter "long" really does shadow "long" used inside the
+    # body - only its own default value expression is the enclosing
+    # scope, not the rest of the function.
+    src = "def f(long=5):\n    return long\n"
+    assert rules(check_builtin_use, src) == []
+
+
+def test_builtin_name_in_a_decorator_is_found():
+    src = "@long\ndef f():\n    pass\n"
+    assert rules(check_builtin_use, src) == [(1, "PY3-BUILTIN")]
+
+
+def test_builtin_name_as_a_lambda_parameters_default_is_found():
+    src = "f = lambda long=long: long\n"
+    assert rules(check_builtin_use, src) == [(1, "PY3-BUILTIN")]
+
+
 def test_stdlib_import_is_found():
     assert rules(check_stdlib_import, "import urllib2\n") == \
         [(1, "PY3-STDLIB")]
@@ -448,6 +609,39 @@ def test_stdlib_import_derived_beyond_the_original_hardcoded_list():
     # DocXMLRPCServer.py) - reproduced directly here against the rule
     # itself, not just the files that happened to surface it.
     for name in ("mimetools", "rexec", "markupbase", "SimpleXMLRPCServer"):
+        tree = ast.parse("import %s\n" % name)
+        findings = list(check_stdlib_import("m.py", tree))
+        assert len(findings) == 1, name
+        assert findings[0].severity == "blocker"
+
+
+def test_stdlib_import_covers_the_pep_594_batch_removed_in_3_13():
+    # R8: AutoSteer CI repro, stdlib sunau.py line 395 ("import audioop")
+    # got no finding at all - audioop, crypt, nis, ossaudiodev and spwd
+    # were missing from STDLIB_REMOVED_SINCE's PEP 594 batch (they sit
+    # right alongside aifc/cgi/cgitb/... already in that same batch).
+    # Testing each by importing it directly against a slim test image
+    # falsely looked like removal as early as 3.9 - every one of these
+    # five needs a system library the slim images never had, at any
+    # version - cross-checked against sys.stdlib_module_names instead
+    # (3.10+, independent of whether the extension actually built):
+    # True at 3.10 and 3.12, False starting at 3.13 - see MIGRATION.md's
+    # R8 evidence.
+    for name in ("audioop", "crypt", "nis", "ossaudiodev", "spwd"):
+        tree = ast.parse("import %s\n" % name)
+        findings = list(check_stdlib_import("m.py", tree, ("3.12", "3.13")))
+        assert len(findings) == 1, name
+        assert findings[0].versions == ("3.13",), name
+
+
+def test_stdlib_import_covers_the_remaining_2a_gaps():
+    # future_builtins/gdbm/linuxaudiodev/strop (gone at the 2-vs-3
+    # boundary, before R6's judged range starts) and parser (removed in
+    # 3.10, replaced by the PEG-based ast module) were the other five
+    # names this same re-derivation found missing.
+    for name, since in (("future_builtins", "3.6"), ("gdbm", "3.6"),
+                        ("linuxaudiodev", "3.6"), ("strop", "3.6"),
+                        ("parser", "3.10")):
         tree = ast.parse("import %s\n" % name)
         findings = list(check_stdlib_import("m.py", tree))
         assert len(findings) == 1, name
