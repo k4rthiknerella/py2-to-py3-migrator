@@ -2,11 +2,15 @@
 """Rules that read a module's Python 2.7 token stream.
 
 Native `tokenize` (the pure-Python, regex-based lexer, not the strict C
-parser behind ast.parse()/compile()) already lexes every one of these
-constructs identically on a 2.7 host and a 3.x host, so these rules need
-no portability shim beyond check_long_suffix: Python 3's tokenizer splits
-"123L" into a NUMBER token "123" and a separate NAME token "L" instead of
-one NUMBER token "123L", so that one case is detected across two tokens.
+parser behind ast.parse()/compile()) lexes most of these constructs
+identically on a 2.7 host and a 3.x host, but two need a portability
+shim because the token stream itself differs by host: check_long_suffix,
+because Python 3's tokenizer splits "123L" into a NUMBER token "123" and
+a separate NAME token "L" instead of one NUMBER token "123L"; and
+check_ne_op, because whether "<>" lexes as one OP token or as two
+adjacent OP tokens is not consistent even across different patches of
+the same minor (see check_ne_op's own comment) -- both are detected by
+checking adjacent tokens for a zero-width gap between them.
 """
 import re
 import tokenize
@@ -24,10 +28,24 @@ def _walk(node):
 
 
 def check_ne_op(path, tree, tokens, versions):
-    for toknum, tokval, start, end, line in tokens:
+    # Whether native tokenize lexes "<>" as one OP token or as two adjacent
+    # OP tokens ("<" immediately followed by ">", no gap) is not a stable
+    # per-version fact: empirically, 3.12.15 keeps the combined token,
+    # every other judged minor's current patch (3.6-3.11, 3.13, 3.15rc)
+    # splits it, and even 3.14 flips between patches (3.14.3 combined,
+    # 3.14.9 split) -- an incidental tokenizer detail, not a documented
+    # removal, so no version table would stay correct. Check both shapes.
+    n = len(tokens)
+    for i in range(n):
+        toknum, tokval, start, end, line = tokens[i]
         if toknum == tokenize.OP and tokval == "<>":
             yield Finding(path, start[0], "PY3-NE-OP", "blocker",
                           "<> operator; Python 3 has only !=", versions)
+        elif toknum == tokenize.OP and tokval == "<" and i + 1 < n:
+            t2, v2, s2, e2, l2 = tokens[i + 1]
+            if t2 == tokenize.OP and v2 == ">" and s2 == end:
+                yield Finding(path, start[0], "PY3-NE-OP", "blocker",
+                              "<> operator; Python 3 has only !=", versions)
 
 
 def check_octal(path, tree, tokens, versions):

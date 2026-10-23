@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import tokenize
+
 from py2scan.parsing import parse_source
 from py2scan.rules.ast_rules import (
     check_async_reserved,
@@ -202,6 +204,27 @@ def test_ne_op_is_found():
 
 def test_standard_ne_is_not_found():
     assert token_rules(check_ne_op, "if x != y:\n    pass\n") == []
+
+
+def test_ne_op_split_across_two_adjacent_tokens_is_found():
+    # Some current CPython patches lex "<>" as two adjacent OP tokens
+    # ("<" then ">", zero-width gap) instead of one -- not a stable
+    # per-version fact (see check_ne_op's own comment). Build the token
+    # stream directly so this test does not depend on the host's own
+    # tokenize behavior.
+    tokens = [(tokenize.OP, "<", (1, 5), (1, 6), "x <> y\n"),
+              (tokenize.OP, ">", (1, 6), (1, 7), "x <> y\n")]
+    findings = list(check_ne_op("m.py", None, tokens, V))
+    assert [(f.line, f.rule) for f in findings] == [(1, "PY3-NE-OP")]
+
+
+def test_ne_op_with_a_real_gap_between_tokens_is_not_found():
+    # "x < > y" is chained-comparison-shaped, not the "<>" operator (and
+    # was never valid 2.7 syntax either) -- the gap between the tokens is
+    # what tells them apart.
+    tokens = [(tokenize.OP, "<", (1, 5), (1, 6), "x < > y\n"),
+              (tokenize.OP, ">", (1, 7), (1, 8), "x < > y\n")]
+    assert list(check_ne_op("m.py", None, tokens, V)) == []
 
 
 def test_old_octal_is_found():

@@ -6,9 +6,10 @@ backticks, <>, old octals, ...) as soon as the host is Python 3, so they
 cannot be the scanner's parser while straddling. parso ships a standalone
 Python 2.7 grammar that both hosts can load, giving the same parse tree on
 both sides. Native `tokenize` is kept for the handful of rules that only
-need the token stream: it already lexes every one of these constructs
-identically on 2.7 and 3.x (parso's own 2.7 grammar has a known gap with
-the <> operator; see rules/token_rules.py).
+need the token stream (parso's own 2.7 grammar has a known gap with the
+<> operator); those rules read the raw token stream defensively rather
+than trusting one fixed shape, since tokenize's own lexing of a couple of
+these constructs is host-dependent -- see rules/token_rules.py.
 """
 import io
 import sys
