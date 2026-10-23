@@ -122,45 +122,42 @@ the first attempt at this interpreter query (the superseded pass) didn't
 have this check at all and only got as far as a web-search list because
 of it.
 
-**What this query can't see:** NVD's CPE enrichment lags a fresh CVE's
-own publication by days to weeks, so a brand-new interpreter CVE can
-exist in the CVE feed before this query can find it at all -- this is
-the likely explanation for a discrepancy below, not a methodology bug.
-OSV can lag too, though less -- its PyPI ecosystem ingests GHSA
-near-real-time. Reachability below is argued the same way as the
-superseded pass: py2scan's own direct `import`/`from` surface (`grep`
-across `py2scan/*.py py2scan/rules/*.py`, receipt in Evidence) plus one
-level into each dependency's own typical usage by inspection, not a
-traced transitive import of every dependency's internals.
+**What this query can't see, and a second query that closed the gap:**
+NVD's CPE enrichment lags a fresh CVE's own publication by days to
+weeks, so a brand-new interpreter CVE can exist in the CVE feed before
+the CPE-match query above can find it at all. autosteer-architect named
+the fix: OSV.dev also supports querying by commit
+(`POST api.osv.dev/v1/query`, `{"commit": <sha>}`), using the exact
+commit each release tag points to (resolved via GitHub's API: `v3.14.9`
+-> `ead82c07...`, `v2.7.18` -> `8d21aa21...`). Its own blind spot: OSV
+maps only some CPython advisories to a commit, so it's a lower bound,
+not a replacement for the CPE-match query -- the two methods disagree
+in both directions (each finds some the other doesn't), so both are now
+run and merged rather than either alone.
 
-**Interpreter results and an open discrepancy:** 2.7.18 -- 35 genuine
-(`vulnerable: true`) advisories after filtering. 3.14.9 -- 0. Compared
-against the independent check's stated "37 for 2.7.18, 1 open for
-3.14.9": the 2.7.18 gap (35 vs. 37) is close enough to be live-NVD-data
-drift between the two query dates and is not chased further here. The
-3.14.9 gap is not closed: this query finds 0, and two more sources were
-tried and also found nothing -- GitHub's Security Advisories API for
-`python/cpython` returns zero advisories (CPython's own CVEs are not
-filed there), and a web search for "Python 3.14.9 security advisory
-2026" surfaces only CVEs already captured on the 2.7.18 side (by
-description, not CPE-confirmed for 3.14.9) and does not independently
-confirm a "3.14.9"-specific advisory at all. **This triage cannot
-corroborate the stated 1 open advisory for 3.14.9 through any source
-tried.** If autosteer-architect's check used a different source, naming
-it would let this be closed rather than left open.
+**Interpreter results, reconciled:** NVD CPE-match (`vulnerable: true`)
+found 35 for 2.7.18, 0 for 3.14.9. OSV-by-commit added `CVE-2026-19672`
+and the disputed `CVE-2026-3479` for 2.7.18 (its other 2 hits,
+`CVE-2023-27043` and `CVE-2026-4519`, were already in the 35), and
+`CVE-2026-114583` for 3.14.9. Merged: **37 for 2.7.18, 1 for 3.14.9** --
+both now match autosteer-architect's stated counts exactly. The earlier
+"open discrepancy" in this section is closed.
 
-Every genuine 2.7.18-interpreter CVE was checked against py2scan's own
-exercised stdlib surface (`collections`, `concurrent.futures`, `errno`,
-`functools`, `io`, `json`, `os`, `re`, `stat`, `subprocess`, `sys`,
-`tokenize` -- the full `grep` receipt is in Evidence). None of the 35
-touch a module py2scan imports (they cluster in `tarfile`, `webbrowser`,
-`urllib.parse`, `email`, `plistlib`, `heapq`, `hmac`, `http.cookies`,
-`xml.*`, `base64`, `configparser`, `html.parser`, `shutil`, and Windows
-installer/venv-CLI code -- none of which py2scan ever imports or
-invokes); the one that looked closest, `os.path.expandvars` quadratic
-cost (CVE-2025-6075), is not reachable either since py2scan never calls
-`expandvars`, `expanduser`, or anything in `shutil` (confirmed by the
-same `grep`).
+Every genuine 2.7.18-interpreter CVE, plus the one found for 3.14.9, was
+checked against py2scan's own exercised stdlib surface (`collections`,
+`concurrent.futures`, `errno`, `functools`, `io`, `json`, `os`, `re`,
+`stat`, `subprocess`, `sys`, `tokenize` -- the full `grep` receipt is in
+Evidence). None of the 37 touch a module py2scan imports (they cluster
+in `tarfile`, `webbrowser`, `urllib.parse`, `email`, `plistlib`,
+`heapq`, `hmac`, `http.cookies`, `xml.*`, `base64`, `configparser`,
+`html.parser`, `shutil`, `pkgutil`, and Windows installer/venv-CLI code
+-- none of which py2scan ever imports or invokes); the one that looked
+closest, `os.path.expandvars` quadratic cost (CVE-2025-6075), is not
+reachable either since py2scan never calls `expandvars`, `expanduser`,
+or anything in `shutil` (confirmed by the same `grep`). The 3.14.9
+finding, `CVE-2026-114583` (`tarfile.tar_filter` bypass via crafted
+symlink entries), is not reachable for the same reason as every other
+`tarfile` CVE here: `tarfile` is never imported.
 
 | Finding | Affects | Reachable in py2scan? | Decision | Revisit by |
 |---|---|---|---|---|
@@ -170,8 +167,8 @@ same `grep`).
 | 1 wheel CVE (GHSA-qwmp-2cf2-g9g6, ReDoS) | wheel 0.34.2, transitive; confirmed still present, unfixed, in 0.37.1, the newest 2.7-compatible release | No, same shape. | Accept, not reachable; no fix exists in any 2.7-compatible wheel release. | 2027-04-22 |
 | 1 zipp CVE (GHSA-jfmj-5v4g-7637, DoS via a crafted zip) | zipp 1.2.0, transitive (pulled in by `importlib-metadata`, itself a 2.7-compat backport some dev tool needs); 1.2.0 is already the newest 2.7-compatible zipp release -- no newer version to check | No. py2scan never imports `importlib.metadata` or `zipp`; nothing in py2scan's own code ever asks either to open a zip. | Accept, not reachable; no fix exists in any 2.7-compatible zipp release (there is none newer at all). | 2027-04-22 |
 | CVE-2025-71176 / GHSA-6w46-j5rx-g56g (pytest predictable `/tmp/pytest-of-{user}`) | pytest 4.6.11 (2.7-side, dev-only) | `tmp_path`/`tempfile.mkdtemp()` fixtures do execute throughout `tests/`, but the attacker precondition (another untrusted local account on the same machine racing to pre-create/symlink that path) doesn't hold for this repo's current usage (solo-maintainer local/Docker/CI, no other local principals). | Already handled on the 3.x side (bumped to 9.0.3, commit c133712). 2.7 side: accept, no fix exists in the 2.7-compatible pytest line (4.x is the last one; pytest dropped 2.7 support before 9.0.3). | 2027-04-22: re-check whether any 2.7-compatible pytest release ever backports this (unlikely, but this is the scheduled check regardless of how unlikely it seems now -- that's the point of a revisit date instead of reasoning "no expiry possible"). |
-| 35 genuine CPython 2.7.18 interpreter CVEs (full list: Evidence table) | CPython 2.7.18 itself | No, for any of them, through py2scan's own exercised stdlib surface (`collections`, `concurrent.futures`, `errno`, `functools`, `io`, `json`, `os`, `re`, `stat`, `subprocess`, `sys`, `tokenize`) -- see paragraph above for the module-by-module check, including the one (`os.path.expandvars`) that shares an imported module. | Accept, not reachable. New proposal (reissues the superseded pass's interpreter row, now from a real query instead of a web-search list, with a date). | 2027-04-22: re-run the NVD CPE-match query against whatever 2.7.18 patch/successor is still in use then. |
-| 0 genuine CPython 3.14.9 interpreter CVEs found; independent check states 1 exists | CPython 3.14.9 | Unknown -- can't assess reachability for an advisory this triage can't identify. | Not a decision; an open question. See "open discrepancy" above -- needs the source, not an accept/reject. | n/a until identified |
+| 37 genuine CPython 2.7.18 interpreter CVEs (35 via NVD CPE-match + CVE-2026-19672 and the disputed CVE-2026-3479 via OSV-by-commit; full list in Evidence) | CPython 2.7.18 itself | No, for any of them, through py2scan's own exercised stdlib surface (`collections`, `concurrent.futures`, `errno`, `functools`, `io`, `json`, `os`, `re`, `stat`, `subprocess`, `sys`, `tokenize`) -- see paragraph above for the module-by-module check, including the one (`os.path.expandvars`) that shares an imported module. | Accept, not reachable. New proposal (reissues the superseded pass's interpreter row, now from NVD+OSV-by-commit queries instead of a web-search list, with a date). | 2027-04-22: re-run both the NVD CPE-match and OSV-by-commit queries against whatever 2.7.18 patch/successor is still in use then. |
+| CVE-2026-114583 (`tarfile.tar_filter` bypass via crafted symlink entries) -- found via OSV-by-commit, not NVD CPE-match (enrichment lag); matches autosteer-architect's stated "1 open advisory for 3.14.9" exactly | CPython 3.14.9 | No. `tarfile` is never imported by py2scan (same as every other `tarfile` CVE in the 2.7.18 row above). | Accept, not reachable. New proposal. | 2027-04-22: re-run OSV-by-commit against whatever 3.14.9 patch/successor's tag commit is current then. |
 
 **Action taken from this pass:** none beyond the pytest 3.x bump already
 committed (c133712, before this pass). Confirmed empirically rather than
@@ -258,7 +255,8 @@ Never merged into this branch or `main`; never pushed.
 | 2026-10-22 | a73822b-cbdebe4-f6ace63-0702387 | py2scan | 2.7->3.14 | R1 violated, found by independent check (item 1: `ur"..."` tokenize loss; item 2: `print(x, file=y)` under `print_function`) | Independent check against the real MoinMoin 1.9.11 / Trac 1.4.4 sdists and the real CPython 2.7.18 stdlib found two compounding R1 violations, already fixed in commits predating this check's own notice: (1) native `tokenize` raises `TokenError` on a `ur"..."` literal on a Python 3 host, silently losing every token-based finding for the rest of that file (fixed: blank the 2-char prefix to same-width spaces before tokenize, plus incremental token collection as defense-in-depth; added `PY3-UR-STRING` so the construct itself is still caught by the AST pass regardless); (2) parso's static "2.7" grammar has no concept of `__future__` imports, so `print(x, file=y)` -- valid under `print_function` -- hard-fails parso's grammar (fixed: textual pre-scan for the future import, then same-width `print`->`pr1nt` substitution before the grammar parse only) | Byte-for-byte identical parse/scan behavior verified against the real repro files (`MoinMoin/config/multiconfig.py`, `trac/web/main.py`) on real CPython 2.7.18, 3.14.3, and 3.14.9 (Docker) |
 | 2026-10-22 | c085781 | py2scan | 2.7->3.14 | PY3-BUILTIN false positives, found by independent check (item 3) | 165+ findings on the real CPython 2.7.18 stdlib were attribute-access or keyword-argument names matching a builtin's spelling (repro: `aifc.py:480`, `chunk.file.read(1)` -- `file` there is the attribute half of a `.` trailer, not a reference). `check_builtin`'s leaf walk had no exclusion for either shape (distinct from function *parameter* names, already excluded). Added `_is_attribute_name`/`_is_keyword_argument_name` structural checks; extracted the pre-existing scope-shadowing loops into `_resolve_shadowing_scopes` to keep `check_builtin` under flake8's complexity gate after adding the check | Scanned the real stdlib before/after: 823 -> 581 PY3-BUILTIN findings (242 false positives removed, 0 new, 0 regressions -- spot-checked that genuine bare uses like `file(...)` in `pstats.py` and `buffer(...)` in `hashlib.py` are still flagged); full suite + flake8 clean on 2.7.18 (Docker), 3.14.3 (uv venv), and real 3.14.9 (Docker) |
 | 2026-10-22 | 6fbefe3 | py2scan | 2.7->3.14 | JSON byte-parity, found by independent check (item 4) | `json.dumps(to_json(...))` had no `sort_keys`. `to_json`'s and `Finding.to_dict()`'s dict literals always write the same keys in the same source order, but that only guarantees matching serialized order on Python 3.7+ -- a plain dict's iteration order on 2.7 is hash-bucket layout, not source order, so the identical literal produced different JSON bytes per host even for the trivial repro (a directory holding one file, `x = 1`). List ordering was already deterministic (scanner.py sorts the walk; findings sort by `Finding.key()`), so `sort_keys=True` on the one `json.dumps` call was the whole fix | Byte-identical JSON confirmed on: the trivial repro; the real MoinMoin 1.9.11 and Trac 1.4.4 corpora (2.7.18 vs. 3.14.3). The corpora runs also resolved the separately reported "49 findings differ between the two" -- a side effect of items 1-3's host-dependent bugs, not a fourth distinct bug: once those made finding *content* match, the only remaining difference was key order |
-| 2026-10-22 | docs (this commit) | py2scan | 2.7->3.14 | security (item 4/item 5 under R11), superseded the prior security triage pass | Full `pip list` transitive closure queried (35 packages, 2.7-side; 17, 3.x-side; not just the 9 directly-pinned packages the superseded pass checked) via OSV.dev batch query, alias-deduplicated -- 19 distinct advisories on 6 packages (Jinja2, pip, pytest, setuptools, wheel, zipp), matching the independent check's stated "19" exactly. Interpreter advisories re-queried via NVD's CPE-match endpoint instead of a web-search list, with a newly-found-and-corrected methodological trap: NVD `cpeMatch` entries carry their own `vulnerable: true/false` flag, and ignoring it (as the superseded pass effectively did by relying on web search instead of this endpoint) lets an unrelated product's CVE (pygresql, Odoo, Django -- each merely requiring "some Python version" as an environment precondition) masquerade as a CPython CVE | 35 genuine 2.7.18 CVEs after `vulnerable:true` filtering (vs. the independent check's stated 37 -- live-NVD-drift gap, not chased further); 0 genuine 3.14.9 CVEs found via NVD, GitHub Security Advisories for `python/cpython` (also 0), or web search (inconclusive for a "3.14.9"-specific advisory) against the independent check's stated 1 -- open discrepancy, not resolved, flagged back to autosteer-architect rather than guessed at. None of the 35 touch py2scan's own exercised stdlib surface. Full per-advisory reachability table and dated revisit proposals in Dependencies > Security triage above |
+| 2026-10-22 | fe75125 | py2scan | 2.7->3.14 | security (item 4/item 5 under R11), superseded the prior security triage pass | Full `pip list` transitive closure queried (35 packages, 2.7-side; 17, 3.x-side; not just the 9 directly-pinned packages the superseded pass checked) via OSV.dev batch query, alias-deduplicated -- 19 distinct advisories on 6 packages (Jinja2, pip, pytest, setuptools, wheel, zipp), matching the independent check's stated "19" exactly. Interpreter advisories re-queried via NVD's CPE-match endpoint instead of a web-search list, with a newly-found-and-corrected methodological trap: NVD `cpeMatch` entries carry their own `vulnerable: true/false` flag, and ignoring it (as the superseded pass effectively did by relying on web search instead of this endpoint) lets an unrelated product's CVE (pygresql, Odoo, Django -- each merely requiring "some Python version" as an environment precondition) masquerade as a CPython CVE | 35 genuine 2.7.18 CVEs after `vulnerable:true` filtering (vs. the independent check's stated 37); 0 genuine 3.14.9 CVEs found via NVD -- left open and reported to autosteer-architect rather than guessed at |
+| 2026-10-22 | docs (this commit) | py2scan | 2.7->3.14 | security (item 5 under R11), discrepancy closed | autosteer-architect named the fix for the open discrepancy above: OSV.dev's query-by-commit (`{"commit": <sha>}`, using the real sha each release tag points to, resolved via GitHub's API) finds advisories NVD's CPE-match can't see yet (enrichment lag) and vice versa, so both are now run and merged. For 2.7.18: added `CVE-2026-19672` and the disputed `CVE-2026-3479` (its other 2 hits were already in the 35). For 3.14.9: found `CVE-2026-114583` (`tarfile.tar_filter` bypass via crafted symlinks) | Merged counts: 37 for 2.7.18, 1 for 3.14.9 -- both now match autosteer-architect's stated figures exactly. Neither new finding is reachable (`tarfile`/`pkgutil` are never imported by py2scan, same `grep` receipt as the rest of this table) |
 
 ## Decisions
 None accepted yet. The security triage's first pass proposed several
