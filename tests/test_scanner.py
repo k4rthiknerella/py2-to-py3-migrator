@@ -94,3 +94,24 @@ def test_missing_extra_interpreter_path_is_harmless():
         assert result.findings == []
     finally:
         shutil.rmtree(root)
+
+
+def test_unreadable_file_is_reported_not_dropped():
+    if os.getuid() == 0:
+        pytest.skip("root bypasses the permission bits this test relies on")
+    root = tempfile.mkdtemp()
+    good = os.path.join(root, "good.py")
+    bad = os.path.join(root, "bad.py")
+    try:
+        with open(good, "wb") as f:
+            f.write(b"x = 1\n")
+        with open(bad, "wb") as f:
+            f.write(b"y = 2\n")
+        os.chmod(bad, 0o000)
+        result = scan(root, jobs=1)
+        assert result.incomplete
+        assert result.unreadable == [("bad.py", "permission denied")]
+        assert result.files == ["good.py"]
+    finally:
+        os.chmod(bad, 0o644)
+        shutil.rmtree(root)

@@ -4,6 +4,7 @@ import os
 import shutil
 import tempfile
 
+import pytest
 from click.testing import CliRunner
 
 from py2scan.cli import main
@@ -67,6 +68,23 @@ def test_format_json_output():
     assert payload["rules"] == {"PY3-PRINT": 1}
     assert payload["findings"][0]["rule"] == "PY3-PRINT"
     assert "3.9" in payload["findings"][0]["versions"]
+
+
+def test_unreadable_file_exits_2_and_is_listed():
+    if os.getuid() == 0:
+        pytest.skip("root bypasses the permission bits this test relies on")
+    root = tempfile.mkdtemp()
+    bad = os.path.join(root, "bad.py")
+    try:
+        with open(bad, "wb") as f:
+            f.write(b"x = 1\n")
+        os.chmod(bad, 0o000)
+        result = CliRunner().invoke(main, ["scan", root])
+    finally:
+        os.chmod(bad, 0o644)
+        shutil.rmtree(root)
+    assert result.exit_code == 2, result.output
+    assert "bad.py: unreadable: permission denied" in result.output
 
 
 def test_jobs_flag_is_accepted():
