@@ -321,7 +321,7 @@ Waves: none — one unit, no import graph.
   passed, 5 skipped on 3.14.7. flake8 `--max-complexity 10` clean on
   both.
 
-**Resolved, commit `pending`:** AutoSteer CI (new this session — runs on
+**Resolved, commit `2f33844`:** AutoSteer CI (new this session — runs on
 every commit to this branch, on `python:2.7.18-slim` and `python:3.14-slim`,
 no network, uid 1000) reported `tests.test_rules::test_ne_op_is_found`
 failing on its 3.14 image. That image resolves to Python 3.14.9; every
@@ -483,9 +483,9 @@ any other process (no pickle, cache, queue, or database).
 | 2026-10-22 | 41792b8 | py2scan | 2.7.18→3.14 | (manual CLI smoke test) | invoked `py2scan.cli.main` directly (text/json/html) against a scan root with `import distutils` + `import urllib2` + `unicode('hi')`, with `--target-version 3.9,3.12` and with the `all` default | distutils scoped to `["3.12"]` only; urllib2/unicode scoped to every judged version; JSON `readiness` keyed by version; HTML report rendered the per-version table and per-finding Versions column without template errors; unknown `--target-version` rejected with `click.BadParameter`, exit code 2 |
 | 2026-10-22 | n/a (CI notice, no code change yet) | py2scan | 2.7.18→3.14 | (AutoSteer CI finding) | AutoSteer CI run on commit `d343999`, `python:2.7.18-slim` + `python:3.14-slim` | 2.7: `117 passed`; 3.14 (resolves to 3.14.9): `1 failed, 111 passed, 5 skipped` — `tests.test_rules::test_ne_op_is_found` |
 | 2026-10-22 | n/a (research, no code change) | py2scan | (check_ne_op root cause) | `tokenize.tokenize()` on `b'x = 1 <> 2\n'`, compared directly between real 3.14.7 (Homebrew venv) and real 3.14.9 (Docker `python:3.14-slim`, confirmed via `python3 --version`) | 3.14.7: one `OP` token `"<>"`; 3.14.9: two adjacent `OP` tokens, `"<"` then `">"`, with `end` of the first == `start` of the second |
-| 2026-10-22 | pending | py2scan | (check_ne_op fix) | `pytest tests/test_rules.py -k ne_op -v` on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), and 3.14.9 (Docker `python:3.14-slim`, ad hoc `click==7.1.2 Jinja2==2.11.3 MarkupSafe==1.1.1 PyYAML==6.0.3 pytest==9.1.1`) | `1 passed` on all three |
-| 2026-10-22 | pending | py2scan | (check_ne_op fix, full suite) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), and 3.14.9 (Docker `python:3.14-slim`) | `115 passed, 2 skipped` on 2.7.18; `112 passed, 5 skipped` on 3.14.7; `110 passed, 7 skipped` on 3.14.9 (2 extra skips vs. 3.14.7 are the same root-dependent tests already skipped non-root — no new skip category) |
-| 2026-10-22 | pending | py2scan | (check_ne_op fix, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker `python:2.7.18-slim`, ad hoc `flake8<4`) and 3.14.7 (Homebrew venv) | 0 violations of any kind, both interpreters |
+| 2026-10-22 | 2f33844 | py2scan | (check_ne_op fix) | `pytest tests/test_rules.py -k ne_op -v` on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), and 3.14.9 (Docker `python:3.14-slim`, ad hoc `click==7.1.2 Jinja2==2.11.3 MarkupSafe==1.1.1 PyYAML==6.0.3 pytest==9.1.1`) | `1 passed` on all three |
+| 2026-10-22 | 2f33844 | py2scan | (check_ne_op fix, full suite) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), and 3.14.9 (Docker `python:3.14-slim`) | `115 passed, 2 skipped` on 2.7.18; `112 passed, 5 skipped` on 3.14.7; `110 passed, 7 skipped` on 3.14.9 (2 extra skips vs. 3.14.7 are the same root-dependent tests already skipped non-root — no new skip category) |
+| 2026-10-22 | 2f33844 | py2scan | (check_ne_op fix, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker `python:2.7.18-slim`, ad hoc `flake8<4`) and 3.14.7 (Homebrew venv) | 0 violations of any kind, both interpreters |
 
 ## Decisions
 - 2026-10-22, owner: `.md`-commit exception for `MIGRATION.md` and
