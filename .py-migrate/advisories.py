@@ -7,44 +7,65 @@
     docker run --rm -v "$PWD":/app -w /app python:3.14-slim \
         python .py-migrate/advisories.py .py-migrate/out/env-2.7.txt .py-migrate/out/env-3.14.txt
 
-Queries OSV (api.osv.dev), which merges the PyPA, GitHub and PSF databases.
-Packages are queried by PyPI name and version. The interpreter is queried by
-the commit its release tag points to, since the PSF advisories give CPython
-ranges as git commits; the tag is resolved through the GitHub API. Each
-advisory's aliases merge into one row, so a CVE with a GHSA and a PYSEC id is
-counted once. Raw responses go to .py-migrate/out/osv/.
+Packages are queried in OSV (api.osv.dev), which merges the PyPA, GitHub and
+PSF databases, by PyPI name and version. The interpreter is queried in two
+places, since neither sees everything: OSV, by the commit its release tag
+points to (the tag resolved through the GitHub API), and NVD, by its CPE
+(cpe:2.3:a:python:python:VERSION). Each advisory's aliases merge into one row,
+so a CVE with a GHSA, a PYSEC and a PSF id is counted once. Raw responses go
+to .py-migrate/out/osv/.
 
-Exits 1 if any advisory has no row in TRIAGE or its row has expired, so a new
+What these queries cannot see:
+- OSV's CPython records are the PSF database's, which hold fixes as git
+  ranges and cover few advisories from before it began; for 2.7.18 OSV
+  returns 4 and NVD 38.
+- NVD sees a CVE only once an analyst has written its CPE configuration, so
+  new CVEs are missing until then, and some configurations name Python only
+  as the platform of another product (triaged here as such).
+- Neither sees vulnerabilities in the C libraries the interpreter links from
+  the operating system (OpenSSL, libexpat, zlib, libffi), which R11 puts out
+  of scope, nor in code a wheel bundles, nor anything undisclosed.
+
+An advisory is triaged by its TRIAGE entry, or else by its entry in
+NOT_REACHED in tests/test_advisories.py, whose test is the evidence that a run
+never reaches its code. Every accept is a proposal pending owner acceptance
+(R11). Exits 1 if any advisory has neither or its triage has expired, so a new
 advisory or a lapsed acceptance cannot pass unnoticed.
 """
+import ast
 import datetime
 import json
 import os
 import sys
+import time
 import urllib.request
 
 OSV = "https://api.osv.dev/v1"
 CPYTHON = "https://api.github.com/repos/python/cpython/git"
+NVD = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 OUT = os.path.join(".py-migrate", "out", "osv")
+TESTS = os.path.join("tests", "test_advisories.py")
+REACH_TEST = TESTS + "::test_a_run_never_reaches_the_code_an_advisory_is_in"
 
 UPGRADE, MITIGATE, ACCEPT = "upgrade", "mitigate", "accept"
 # The 2.7 side is deleted at flip; until then its packages are the last
 # releases that support 2.7, so no fixed version can be installed there.
 STRADDLE = "2027-04-22"
+REVIEW = "2027-04-22"  # target-side accepts, reviewed with the straddle ones
 SDISTS = ".py-migrate/out/pip-download-2.7.txt lists the five sdists pip builds on aarch64"
 TRUSTED = ("archives come only from PyPI at the pinned versions (test_requirements_name_only_packages_"
            "from_the_default_index); a crafted archive there could already run code in its setup.py")
 
-# Primary id (a CVE where there is one) -> (decision, expires, why). Tests named
-# here are in tests/test_advisories.py.
+# Primary id (a CVE where there is one) -> (decision, expires, why), for the
+# advisories NOT_REACHED cannot cover or that need more said. Tests named here
+# are in tests/test_advisories.py.
 TRIAGE = {
     # Jinja2 2.11.3, 2.7 side. Fixed in 3.1.3 to 3.1.6, which need Python 3.7.
-    "CVE-2024-22195": (ACCEPT, STRADDLE, "xmlattr is never applied: test_the_report_template_applies_"
-                                         "neither_xmlattr_nor_attr"),
-    "CVE-2024-34064": (ACCEPT, STRADDLE, "xmlattr is never applied (same test)"),
+    # CVE-2024-22195 and CVE-2024-34064 (xmlattr) are in NOT_REACHED.
     "CVE-2024-56326": (ACCEPT, STRADDLE, "needs an attacker-written template in a sandbox; py2scan renders "
                                          "only its constant template, unsandboxed: test_py2scan_renders_only_"
-                                         "its_own_constant_template_without_a_sandbox"),
+                                         "its_own_constant_template_without_a_sandbox; jinja2.sandbox is never "
+                                         "loaded (" + REACH_TEST + "[CVE-2024-56326])"),
     "CVE-2025-27516": (ACCEPT, STRADDLE, "needs an attacker-written template in a sandbox (same tests)"),
     # pip 20.0.2, 2.7 image: used only by docker build. 20.3.4, the last for 2.7, fixes none.
     "CVE-2021-3572": (ACCEPT, STRADDLE, "git references: no VCS requirement (test_requirements_name_only_"
@@ -74,27 +95,43 @@ TRIAGE = {
     # pytest 4.6.11, 2.7 side (pytest 9.1.1 on 3.14 is fixed).
     "CVE-2025-71176": (ACCEPT, STRADDLE, "tests run in a throwaway container with no other user; "
                                          "test_pytest_temp_directories_are_closed_to_other_users checks it"),
-    # zipp 1.2.0, 2.7 side: importlib_metadata loads it inside pytest and flake8.
-    "CVE-2024-5569": (ACCEPT, STRADDLE, "a py2scan run never loads it (test_a_run_never_loads_a_module_with_"
-                                        "an_advisory), and the only zip on sys.path, python27.zip, does not exist"),
-    # CPython 2.7.18: end of life, no fixed release will exist.
-    "CVE-2023-27043": (ACCEPT, STRADDLE, "email is never loaded (test_a_run_never_loads_a_module_with_an_advisory)"),
+    # zipp 1.2.0 (2.7 side, loaded by importlib_metadata inside pytest and flake8) is in NOT_REACHED.
+    # CPython 2.7.18: end of life, no fixed release will exist. The CVEs whose code a run
+    # never reaches are in NOT_REACHED; these are the ones a run cannot test.
+    "CVE-2009-2940": (ACCEPT, STRADDLE, "not CPython: NVD's configuration names Python as the platform of "
+                                        "PyGreSQL (.py-migrate/out/osv/nvd-*.json)"),
+    "CVE-2021-28667": (ACCEPT, STRADDLE, "not CPython: StackStorm, with Python as its platform"),
+    "CVE-2015-5652": (ACCEPT, STRADDLE, "Windows python.exe loading readline.pyd from the working directory; "
+                                        "a property of the user's interpreter, which py2scan cannot change; "
+                                        "the test images are Linux"),
+    "CVE-2022-26488": (ACCEPT, STRADDLE, "the Windows installer's search path: the user's installation, "
+                                         "not py2scan's"),
     "CVE-2026-3479": (ACCEPT, STRADDLE, "disputed; pkgutil is loaded for extend_path, get_data never runs "
-                                        "(test_a_run_never_calls_pkgutil_get_data)"),
-    "CVE-2026-4519": (ACCEPT, STRADDLE, "webbrowser is never loaded (same test as email)"),
-    "CVE-2026-19672": (ACCEPT, STRADDLE, "tarfile is never loaded (same test as email)"),
+                                        "(" + REACH_TEST + "[CVE-2026-3479])"),
     # CPython 3.14.9: fixed by 0901ad4f on the 3.14 branch, 52 commits after v3.14.9, in no release yet.
-    "CVE-2026-114583": (ACCEPT, "2027-01-22", "tarfile is never loaded (test_a_run_never_loads_a_module_with_"
-                                              "an_advisory, on 3.14 once py2scan runs there); upgrade the "
-                                              "target image when 3.14.10 ships"),
+    "CVE-2026-114583": (ACCEPT, "2027-01-22", "tarfile is never loaded (" + REACH_TEST + "[CVE-2026-114583], "
+                                              "on 3.14 once py2scan runs there); upgrade the target image "
+                                              "when 3.14.10 ships"),
+    # NVD matches for 3.14.9 that name Python only as another product's platform.
+    "CVE-2020-29396": (ACCEPT, REVIEW, "not CPython: Odoo, with Python as its platform"),
+    "CVE-2021-32052": (ACCEPT, REVIEW, "not CPython: Django's URLValidator, with Python as its platform; "
+                                       "Django is not installed"),
 }
 
 
-def request(url, body=None):
+def request(url, body=None, timeout=60, tries=1):
     headers = {"User-Agent": "py2scan-advisories", "Content-Type": "application/json"}
     data = json.dumps(body).encode("utf-8") if body is not None else None
-    with urllib.request.urlopen(urllib.request.Request(url, data, headers), timeout=60) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    attempt = 1
+    while True:
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, data, headers), timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except OSError:  # NVD often times out
+            if attempt >= tries:
+                raise
+            attempt += 1
+            time.sleep(10)
 
 
 def tag_commit(version):
@@ -103,6 +140,33 @@ def tag_commit(version):
     while target["type"] == "tag":
         target = request(CPYTHON + "/tags/" + target["sha"])["object"]
     return target["sha"]
+
+
+def nvd_cves(version):
+    """(id, description) of each CVE whose NVD configuration matches CPython VERSION's CPE."""
+    cpe = "cpe:2.3:a:python:python:%s:*:*:*:*:*:*:*" % version
+    found, start = [], 0
+    while True:
+        page = request("%s?cpeName=%s&startIndex=%d&resultsPerPage=2000" % (NVD, cpe, start), timeout=300, tries=4)
+        with open(os.path.join(OUT, "nvd-%s-%d.json" % (version, start)), "w") as f:
+            json.dump(page, f, indent=1, sort_keys=True)
+        for item in page["vulnerabilities"]:
+            cve = item["cve"]
+            found.append((cve["id"], next((d["value"] for d in cve["descriptions"] if d["lang"] == "en"), "")))
+        start += len(page["vulnerabilities"])
+        if start >= page["totalResults"] or not page["vulnerabilities"]:
+            return found
+        time.sleep(6)  # NVD allows 5 requests in 30 seconds without a key
+
+
+def not_reached():
+    """NOT_REACHED in tests/test_advisories.py: advisory -> the code a run never reaches."""
+    with open(TESTS, "rb") as f:
+        tree = ast.parse(f.read())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and [getattr(t, "id", None) for t in node.targets] == ["NOT_REACHED"]:
+            return ast.literal_eval(node.value)
+    raise SystemExit("no NOT_REACHED in " + TESTS)
 
 
 def read_env(path):
@@ -133,6 +197,10 @@ def fixed_versions(vuln, name):
     return fixed
 
 
+def new_row():
+    return {"ids": set(), "summary": "", "fixed": set(), "sources": set()}
+
+
 def collect(pins):
     batch = request(OSV + "/querybatch", {"queries": [query(name, version) for _, name, version in pins]})
     with open(os.path.join(OUT, "querybatch.json"), "w") as f:
@@ -145,41 +213,75 @@ def collect(pins):
                 json.dump(vuln, f, indent=1, sort_keys=True)
             ids = sorted(set([vuln["id"]] + vuln.get("aliases", [])))
             cves = [i for i in ids if i.startswith("CVE-")]
-            row = rows.setdefault((env, name, version, cves[0] if cves else ids[0]),
-                                  {"ids": set(), "summary": "", "fixed": set()})
+            row = rows.setdefault((env, name, version, cves[0] if cves else ids[0]), new_row())
             row["ids"].update(ids)
+            row["sources"].add("osv")
             row["summary"] = row["summary"] or " ".join((vuln.get("summary") or vuln.get("details", "")).split())
             row["fixed"].update(fixed_versions(vuln, name))
+    for env, name, version in pins:
+        if name == "python":
+            for cve, text in nvd_cves(version):
+                row = rows.setdefault((env, name, version, cve), new_row())
+                row["ids"].add(cve)
+                row["sources"].add("nvd")
+                row["summary"] = row["summary"] or " ".join(text.split())
     return rows
 
 
-def verdict(ids, today):
-    """(decision text, ok) for an advisory's merged ids."""
+def triage(ids, env, reach):
+    """(decision, expires, why) for an advisory's merged ids, or None."""
     key = next((i for i in sorted(ids) if i in TRIAGE), None)
-    if key is None:
+    if key is not None:
+        return TRIAGE[key]
+    key = next((i for i in sorted(ids) if i in reach), None)
+    if key is not None:
+        return (ACCEPT, STRADDLE if env == "2.7" else REVIEW,
+                "never reached: %s[%s] (%s)" % (REACH_TEST, key, ", ".join(reach[key])))
+    return None
+
+
+def verdict(ids, env, today, reach):
+    """(decision text, ok) for an advisory's merged ids."""
+    found = triage(ids, env, reach)
+    if found is None:
         return "UNTRIAGED", False
-    decision, expires, why = TRIAGE[key]
+    decision, expires, why = found
     if decision not in (UPGRADE, MITIGATE, ACCEPT):
         return "INVALID DECISION " + decision, False
     if datetime.datetime.strptime(expires, "%Y-%m-%d").date() < today:
         return "EXPIRED %s %s" % (decision, expires), False
+    if decision == ACCEPT:
+        return "proposed accept until %s, pending owner acceptance: %s" % (expires, why), True
     return "%s until %s: %s" % (decision, expires, why), True
+
+
+def source_counts(rows, env, version):
+    sources = [r["sources"] for key, r in rows.items() if key[:3] == (env, "python", version)]
+    return "python %s: OSV %d, NVD %d, both %d, OSV only %d, NVD only %d" % (
+        version, sum("osv" in s for s in sources), sum("nvd" in s for s in sources),
+        sum(len(s) == 2 for s in sources), sum(s == set(["osv"]) for s in sources),
+        sum(s == set(["nvd"]) for s in sources))
 
 
 def main(paths):
     if not os.path.isdir(OUT):
         os.makedirs(OUT)
     pins = [pin for path in paths for pin in read_env(path)]
+    reach = not_reached()
     rows = collect(pins)
-    failing = 0
+    failing = proposed = 0
     for (env, name, version, primary), row in sorted(rows.items()):
-        text, ok = verdict(row["ids"], datetime.date.today())
+        text, ok = verdict(row["ids"], env, datetime.date.today(), reach)
         failing += not ok
-        print("%-5s %-11s %-9s %-16s fixed %-14s %s | %s\n      %s" % (
-            env, name, version, primary, ",".join(sorted(row["fixed"])) or "-",
+        proposed += text.startswith("proposed")
+        print("%-5s %-11s %-9s %-16s %-7s fixed %-14s %s | %s\n      %s" % (
+            env, name, version, primary, "+".join(sorted(row["sources"])), ",".join(sorted(row["fixed"])) or "-",
             " ".join(sorted(row["ids"] - set([primary]))), row["summary"][:80], text))
-    print("%d packages and interpreters, %d advisories after merging aliases, %d untriaged or expired" % (
-        len(pins), len(rows), failing))
+    for env, name, version in pins:
+        if name == "python":
+            print(source_counts(rows, env, version))
+    print("%d packages and interpreters, %d advisories after merging aliases, %d proposed accepts pending owner "
+          "acceptance, %d untriaged or expired" % (len(pins), len(rows), proposed, failing))
     return 1 if failing else 0
 
 

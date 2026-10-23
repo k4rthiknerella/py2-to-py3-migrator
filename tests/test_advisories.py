@@ -19,37 +19,76 @@ from py2scan import report
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Modules with an advisory in either environment that a py2scan run must never load.
-NEVER_LOADED = (
-    "email", "tarfile", "webbrowser",  # CPython 2.7.18 and 3.14.9
-    "pip", "setuptools", "pkg_resources", "wheel",  # build tools in the test images
-    "pytest", "_pytest", "zipp", "importlib_metadata",  # test tools
-    "jinja2.sandbox",  # the Jinja2 sandbox breakouts
-)
-# Loaded on 2.7 (the futures backport's concurrent/__init__.py calls extend_path),
-# so the claim is about the function: CVE-2026-3479 is in pkgutil.get_data.
-NEVER_CALLED = (("pkgutil", "get_data"),)
-WATCH = NEVER_LOADED + ("pkgutil", "py2scan.report", "py2scan.scanner")
+# Advisory -> where its vulnerable code is: "module" (and its submodules) or
+# "module:function". A py2scan run must reach none of it, on either interpreter;
+# names cover both the 2.7 and the 3 spelling of a module. On 2.7, jinja2._compat
+# imports urllib, which loads socket, _ssl, ssl, base64 and urlparse, so for those
+# the entries name the vulnerable functions. .py-migrate/advisories.py
+# reads this map, so an advisory triaged as never reached always has a test here.
+NOT_REACHED = {
+    # CPython 2.7.18
+    "CVE-2007-4559": ["tarfile"],
+    "CVE-2009-3720": ["pyexpat", "xml"],
+    "CVE-2017-17522": ["webbrowser"],
+    "CVE-2017-18207": ["wave"],
+    "CVE-2021-23336": ["urlparse:parse_qs", "urlparse:parse_qsl", "urllib.parse:parse_qs",
+                       "urllib.parse:parse_qsl", "cgi"],
+    "CVE-2021-3733": ["urllib2", "urllib.request"],
+    "CVE-2022-0391": ["urlparse:urlsplit", "urllib.parse:urlsplit"],
+    "CVE-2022-45061": ["encodings.idna"],
+    "CVE-2022-48560": ["heapq:heappushpop", "_heapq:heappushpop"],
+    "CVE-2022-48564": ["plistlib"],
+    "CVE-2022-48565": ["plistlib"],
+    "CVE-2022-48566": ["hmac:compare_digest", "operator:_compare_digest", "_operator:_compare_digest"],
+    "CVE-2023-24329": ["urlparse:urlsplit", "urllib.parse:urlsplit"],
+    "CVE-2023-27043": ["email"],
+    "CVE-2023-36632": ["email"],
+    "CVE-2023-40217": ["ssl:wrap_socket", "ssl:__init__", "_SSLContext:_wrap_socket", "_SSLContext:_wrap_bio"],
+    "CVE-2024-6232": ["tarfile"],
+    "CVE-2024-7592": ["Cookie", "http.cookies"],
+    "CVE-2024-9287": ["venv"],
+    "CVE-2025-12084": ["xml"],
+    "CVE-2025-12781": ["base64:b64decode", "base64:standard_b64decode", "base64:urlsafe_b64decode"],
+    "CVE-2025-13462": ["tarfile"],
+    "CVE-2025-13836": ["httplib", "http.client"],
+    "CVE-2025-13837": ["plistlib"],
+    "CVE-2025-6075": ["posixpath:expandvars", "ntpath:expandvars"],
+    "CVE-2026-0864": ["ConfigParser", "configparser"],
+    "CVE-2026-15308": ["HTMLParser", "html.parser"],
+    "CVE-2026-19672": ["tarfile"],
+    "CVE-2026-3087": ["shutil:unpack_archive"],
+    "CVE-2026-3479": ["pkgutil:get_data"],  # pkgutil itself loads: futures' namespace shim calls extend_path
+    "CVE-2026-3644": ["Cookie", "http.cookies"],
+    "CVE-2026-4224": ["pyexpat", "xml"],
+    "CVE-2026-4360": ["tarfile"],
+    "CVE-2026-4519": ["webbrowser"],
+    "CVE-2026-6019": ["Cookie", "http.cookies"],
+    "CVE-2026-7210": ["pyexpat", "xml"],
+    # CPython 3.14.9
+    "CVE-2026-114583": ["tarfile"],
+    # Packages
+    "CVE-2024-22195": ["jinja2.filters:do_xmlattr"],
+    "CVE-2024-34064": ["jinja2.filters:do_xmlattr"],
+    "CVE-2024-56326": ["jinja2.sandbox"],
+    "CVE-2025-27516": ["jinja2.sandbox", "jinja2.filters:do_attr"],
+    "CVE-2024-5569": ["zipp"],
+}
+# Build and test tools: in the images, never part of a run.
+TOOLS = ["pip", "setuptools", "pkg_resources", "wheel", "pytest", "_pytest", "importlib_metadata", "zipp"]
 
 # Installed as sitecustomize, so every process of the run records itself, the
 # scan workers included: forked ones inherit the profiler, and forkserver's
-# server runs site at startup. A module is loaded when its code runs, which the
-# profiler sees as a call to <module>; modules imported before site finished
-# are listed from sys.modules.
+# server runs site at startup. Each process writes every distinct function it
+# calls: Python ("call", with <module> for a module's own code), C module
+# functions ("c_call") and C methods ("c_method", under their type's name), and
+# the modules already imported when site finished.
 RECORDER = """\
 import os
 import sys
 import threading
 
-_WATCH = %r
-_seen = {}
 _log = open(os.environ["PY2SCAN_REACH_LOG"], "a")
-
-
-def _watched(module):
-    if module not in _seen:
-        _seen[module] = any(module == w or module.startswith(w + ".") for w in _WATCH)
-    return _seen[module]
+_seen = set()
 
 
 def _write(*fields):
@@ -58,20 +97,27 @@ def _write(*fields):
 
 
 for _name in sorted(sys.modules):
-    if _watched(_name):
+    if sys.modules[_name] is not None:
         _write("loaded", _name)
 
 
 def _profile(frame, event, arg):
     if event == "call":
-        module = frame.f_globals.get("__name__") or ""
-        if _watched(module):
-            _write("call", module, frame.f_code.co_name)
+        key = ("call", frame.f_globals.get("__name__") or "?", frame.f_code.co_name)
+    elif event == "c_call" and getattr(arg, "__module__", None):
+        key = ("c_call", arg.__module__, arg.__name__)
+    elif event == "c_call":
+        key = ("c_method", type(getattr(arg, "__self__", None)).__name__, arg.__name__)
+    else:
+        return
+    if (os.getpid(), key) not in _seen:
+        _seen.add((os.getpid(), key))
+        _write(*key)
 
 
 sys.setprofile(_profile)
 threading.setprofile(_profile)
-""" % (WATCH,)
+"""
 
 # What pip writes for the console_scripts entry point in setup.py.
 ENTRY_POINT = "import sys\nfrom py2scan.cli import main\nsys.exit(main())\n"
@@ -79,7 +125,7 @@ ENTRY_POINT = "import sys\nfrom py2scan.cli import main\nsys.exit(main())\n"
 
 @pytest.fixture(scope="module")
 def recorded(tmpdir_factory):
-    """Run the CLI with every output option and return the records, split into fields."""
+    """Run the CLI with every output option; (modules seen, (module, function) pairs called, records)."""
     tmp = tmpdir_factory.mktemp("reach")
     tmp.mkdir("site").join("sitecustomize.py").write(RECORDER)
     src = tmp.mkdir("src")
@@ -95,23 +141,36 @@ def recorded(tmpdir_factory):
              "--html", str(html), "--config", str(tmp.join("cfg.yml")), "--jobs", "2"],
             env=env, stdout=null)
     assert code == 1 and html.check(file=1), "the run did not complete"
-    return [line.split() for line in log.read().splitlines()]
+    records = [line.split() for line in log.read().splitlines()]
+    calls = set((r[2], r[3]) for r in records if r[1] in ("call", "c_call", "c_method"))
+    modules = set(r[2] for r in records if r[1] in ("loaded", "call", "c_call"))
+    return modules, calls, records
+
+
+def _reached(entry, modules, calls):
+    module, _, function = entry.partition(":")
+    if function:
+        return sorted("%s:%s" % c for c in calls if c == (module, function))
+    return sorted(m for m in modules if m == module or m.startswith(module + "."))
 
 
 def test_the_recorder_sees_the_main_process_and_the_scan_workers(recorded):
-    reporters = set(r[0] for r in recorded if r[1:] == ["call", "py2scan.report", "to_html"])
-    scanners = set(r[0] for r in recorded if r[1:] == ["call", "py2scan.scanner", "_scan_batch"])
+    records = recorded[2]
+    reporters = set(r[0] for r in records if r[1:] == ["call", "py2scan.report", "to_html"])
+    scanners = set(r[0] for r in records if r[1:] == ["call", "py2scan.scanner", "_scan_batch"])
     assert reporters and scanners and not reporters & scanners
+    assert ("posix", "stat") in recorded[1] and ("list", "append") in recorded[1]  # and C calls
 
 
-def test_a_run_never_loads_a_module_with_an_advisory(recorded):
-    loaded = sorted(set(r[2] for r in recorded if r[2] != "pkgutil" and not r[2].startswith("py2scan.")))
-    assert loaded == []
+@pytest.mark.parametrize("advisory", sorted(NOT_REACHED))
+def test_a_run_never_reaches_the_code_an_advisory_is_in(recorded, advisory):
+    modules, calls, _ = recorded
+    assert [hit for entry in NOT_REACHED[advisory] for hit in _reached(entry, modules, calls)] == []
 
 
-def test_a_run_never_calls_pkgutil_get_data(recorded):
-    calls = set(tuple(r[2:4]) for r in recorded if r[1] == "call")
-    assert calls.isdisjoint(NEVER_CALLED)
+def test_a_run_never_loads_a_build_or_test_tool(recorded):
+    modules, calls, _ = recorded
+    assert [hit for entry in TOOLS for hit in _reached(entry, modules, calls)] == []
 
 
 def _py2scan_sources():
