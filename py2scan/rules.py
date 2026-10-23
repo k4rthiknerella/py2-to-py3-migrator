@@ -484,10 +484,23 @@ VERSION_AWARE_AST_RULES = [check_stdlib_import]
 
 
 def check_ne_op(path, tokens):
-    for toknum, tokval, start, _end, _line in tokens:
+    # Python 2.7's tokenizer (and Python 3.14.7's) lexes <> as one OP
+    # token, "<>". Starting with Python 3.14.9, the tokenizer no longer
+    # recognizes <> as a compound operator at all and splits it into two
+    # adjacent OP tokens, "<" immediately followed by ">" - confirmed via
+    # a direct tokenize.tokenize() comparison between the two patch
+    # releases (see MIGRATION.md). Both forms need detecting.
+    prev_end = prev_was_lt = None
+    for toknum, tokval, start, end, _line in tokens:
         if toknum == tokenize.OP and tokval == "<>":
             yield Finding(path, start[0], "PY3-NE-OP", "blocker",
                           "<> operator; Python 3 only has !=")
+        elif (toknum == tokenize.OP and tokval == ">"
+                and prev_was_lt and start == prev_end):
+            yield Finding(path, start[0], "PY3-NE-OP", "blocker",
+                          "<> operator; Python 3 only has !=")
+        prev_end = end
+        prev_was_lt = toknum == tokenize.OP and tokval == "<"
 
 
 def check_octal(path, tokens):
