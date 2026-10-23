@@ -5,6 +5,7 @@ setup(
     version="0.2.0",
     description="Find what stops a Python 2 codebase from running on Python 3",
     packages=find_packages(exclude=["tests"]),
+    package_data={"py2scan.py27": ["PSF-LICENSE.txt"]},  # the PSF License travels with the code ported from CPython
     python_requires="==2.7.*",
     install_requires=[
         "click==7.1.2",
