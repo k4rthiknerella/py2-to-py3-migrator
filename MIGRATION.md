@@ -634,7 +634,7 @@ here to the actual 3, confirmed via `git show 91d8bd1 -- tests/ | grep
 115 passed, 7 skipped (3.14.7, 3.14.9). flake8 clean on 2.7.18 and
 3.14.7.
 
-**Resolved, commit `pending`: item 3's remaining edge-case receipts, the
+**Resolved, commit `fe764df`: item 3's remaining edge-case receipts, the
 JSON schema version, item 2c's never-executes guarantee, and item 5's
 two-file claim.** Triggered by autosteer-architect resending the
 verbatim task text and rulings after an earlier handoff turned out to be
@@ -923,8 +923,8 @@ any other process (no pickle, cache, queue, or database).
 | 2026-10-22 | 91d8bd1 | py2scan | (item 3, NUL byte / deep nesting / bad codec, fix) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), 3.14.9 (Docker `py2scan-test314`) | `120 passed, 2 skipped` on 2.7.18; `115 passed, 7 skipped` on 3.14.7 and 3.14.9 |
 | 2026-10-22 | 91d8bd1 | py2scan | (item 3, NUL byte / deep nesting / bad codec, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker, ad hoc `flake8<4`) and 3.14.7 | 0 violations, both interpreters |
 | 2026-10-22 | n/a (research, no code change) | py2scan | (item 3, symlink loop / BOM / CRLF / empty file / `*.py` directory) | a self-referencing symlink, a BOM-prefixed file, a CRLF file, a 0-byte file, and a directory literally named `weird.py`, each scanned via real `scan`/`scan_file` calls on 2.7.18 | all 5 already handled correctly with no crash and no code change — confirms the manual verification claimed in the `91d8bd1` writeup above, closing the gap before committing dedicated tests for each |
-| 2026-10-22 | pending | py2scan | (item 3 edge-case tests, item 3 schema version, item 2c, item 5) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), 3.14.9 (Docker `py2scan-test314`) | `128 passed, 2 skipped` on 2.7.18; `123 passed, 7 skipped` on 3.14.7 and 3.14.9 |
-| 2026-10-22 | pending | py2scan | (item 3 edge-case tests, item 3 schema version, item 2c, item 5, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker, ad hoc `flake8<4`), 3.14.7 (Homebrew venv), and 3.14.9 (Docker `py2scan-test314`, ad hoc `flake8`) | first pass: 1 violation, 2.7.18 only (`F812 list comprehension redefines 'f'` in the new item-5 test — a real Python-2-only scoping difference, not a false positive); 0 violations on 3.14.7/3.14.9; after renaming the comprehension variable, 0 violations on all three |
+| 2026-10-22 | fe764df | py2scan | (item 3 edge-case tests, item 3 schema version, item 2c, item 5) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), 3.14.9 (Docker `py2scan-test314`) | `128 passed, 2 skipped` on 2.7.18; `123 passed, 7 skipped` on 3.14.7 and 3.14.9 |
+| 2026-10-22 | fe764df | py2scan | (item 3 edge-case tests, item 3 schema version, item 2c, item 5, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker, ad hoc `flake8<4`), 3.14.7 (Homebrew venv), and 3.14.9 (Docker `py2scan-test314`, ad hoc `flake8`) | first pass: 1 violation, 2.7.18 only (`F812 list comprehension redefines 'f'` in the new item-5 test — a real Python-2-only scoping difference, not a false positive); 0 violations on 3.14.7/3.14.9; after renaming the comprehension variable, 0 violations on all three |
 
 ## Decisions
 - 2026-10-22, owner: `.md`-commit exception for `MIGRATION.md` and
