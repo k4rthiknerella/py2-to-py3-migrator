@@ -866,7 +866,7 @@ standing CI-run script.
 130 passed, 2 skipped (2.7.18); 125 passed, 7 skipped (3.14.7, 3.14.9).
 flake8 `--max-complexity 10` clean on all three.
 
-**Resolved, commit `pending`: two new rules, `PY3-UR-STRING` and
+**Resolved, commit `4e52811`: two new rules, `PY3-UR-STRING` and
 `PY3-UNICODE-ESCAPE`, closing an R1 violation AutoSteer CI's own
 real-interpreter check found on real stdlib files that this session's
 own item-2a diff (above) could not, by construction - that check only
@@ -1080,9 +1080,9 @@ any other process (no pickle, cache, queue, or database).
 | 2026-10-23 | a66f578 | py2scan | (item 2a, two new regression tests, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker, ad hoc `flake8<4`), 3.14.7 (Homebrew venv), and 3.14.9 (Docker `py2scan-test314`, ad hoc `flake8`) | 0 violations, all three |
 | 2026-10-23 | n/a (AutoSteer CI notice, no code change yet) | py2scan | (AutoSteer CI finding, R1 on real stdlib) | AutoSteer CI run against the real stdlib tree, 3.6.15–3.15.1 | 3 real files (`json/__init__.py`, `lib2to3/fixes/fix_unicode.py`, `posixpath.py`) that real 3.6–3.15 cannot compile, with no blocker reported on the 2.7 scan for any of them — R1 violation |
 | 2026-10-23 | n/a (research, no code change) | py2scan | (root cause, `ur`-string and invalid `\u` escape) | `ast.parse`/`tokenize.tokenize` on real 2.7.18 and 3.14.7/3.14.9 for all 8 u/r prefix orderings, and for a bare string with `\uXXXX` vs. `b'\uXXXX'` vs. `r'\uXXXX'` vs. `u'\uXXXX'` | 2.7.18 accepts exactly `ur`/`Ur`/`uR`/`UR` (not `ru` etc); every Python 3.x rejects all 8, and 3.14.7's own `tokenize` module raises `TokenError` for it, not just a later `SyntaxError`; a bare string's invalid `\u` escape is inert on 2.7.18 but a `SyntaxError` on every Python 3.x; `b'...'` behaves identically on both (never flagged) |
-| 2026-10-23 | pending | py2scan | (`PY3-UR-STRING`/`PY3-UNICODE-ESCAPE` fix) | `scan_file` against the exact 3 real files AutoSteer named, inside `py2scan-test` (2.7.18) | `posixpath.py` → 1 `PY3-UR-STRING` blocker; `fix_unicode.py` → 4 `PY3-UR-STRING` blockers; `json/__init__.py` → 1 `PY3-UNICODE-ESCAPE` blocker — all 3 R1 violations closed |
-| 2026-10-23 | pending | py2scan | (`PY3-UR-STRING`/`PY3-UNICODE-ESCAPE` fix, full suite) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), 3.14.9 (Docker `py2scan-test314`) | `142 passed, 2 skipped` on 2.7.18; `135 passed, 9 skipped` on 3.14.7 and 3.14.9 |
-| 2026-10-23 | pending | py2scan | (`PY3-UR-STRING`/`PY3-UNICODE-ESCAPE` fix, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker, ad hoc `flake8<4`), 3.14.7 (Homebrew venv), and 3.14.9 (Docker `py2scan-test314`, ad hoc `flake8`) | 0 violations, all three |
+| 2026-10-23 | 4e52811 | py2scan | (`PY3-UR-STRING`/`PY3-UNICODE-ESCAPE` fix) | `scan_file` against the exact 3 real files AutoSteer named, inside `py2scan-test` (2.7.18) | `posixpath.py` → 1 `PY3-UR-STRING` blocker; `fix_unicode.py` → 4 `PY3-UR-STRING` blockers; `json/__init__.py` → 1 `PY3-UNICODE-ESCAPE` blocker — all 3 R1 violations closed |
+| 2026-10-23 | 4e52811 | py2scan | (`PY3-UR-STRING`/`PY3-UNICODE-ESCAPE` fix, full suite) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), 3.14.9 (Docker `py2scan-test314`) | `142 passed, 2 skipped` on 2.7.18; `135 passed, 9 skipped` on 3.14.7 and 3.14.9 |
+| 2026-10-23 | 4e52811 | py2scan | (`PY3-UR-STRING`/`PY3-UNICODE-ESCAPE` fix, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker, ad hoc `flake8<4`), 3.14.7 (Homebrew venv), and 3.14.9 (Docker `py2scan-test314`, ad hoc `flake8`) | 0 violations, all three |
 
 ## Decisions
 - 2026-10-22, owner: `.md`-commit exception for `MIGRATION.md` and
