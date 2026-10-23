@@ -207,6 +207,35 @@ def check_bad_unicode_escape(path, tree, tokens, versions):
                           "Python 2", versions)
 
 
+def check_mixed_bytes_literal(path, tree, tokens, versions):
+    """b"a" "b" (or any other adjacency mixing a b"..."/B"..." literal
+    with a plain/u"..." one): valid Python 2.7 syntax - str and bytes
+    are the same type there, so implicitly concatenating them is no
+    different from concatenating two plain strings. Every judged
+    Python 3 version rejects it outright ("cannot mix bytes and
+    nonbytes literals", confirmed on real 3.14.9), regardless of which
+    literal in the group carries the mismatched prefix, and native
+    compile() can only ever confirm this for whichever one version
+    py2scan happens to be running under (R9) - every other judged
+    version is falsely reported ready without this rule. parso wraps
+    2+ adjacent string literals in a "strings" node, each as its own
+    "string" child leaf; flag the group once if any child's prefix
+    disagrees with any other on bytes-ness (r/u are irrelevant to this
+    specific check - only the presence of "b" matters)."""
+    for node in _nodes(tree, "strings"):
+        is_bytes = set()
+        for child in node.children:
+            if child.type != "string":
+                continue
+            prefix = _STRING_PREFIX_RE.match(child.value).group().lower()
+            is_bytes.add("b" in prefix)
+        if len(is_bytes) > 1:
+            yield Finding(path, node.start_pos[0], "PY3-MIXED-STR-BYTES", "blocker",
+                          "adjacent string literals mix a bytes literal with a "
+                          "text one; Python 3 cannot implicitly concatenate them",
+                          versions)
+
+
 def _enclosing_loop_body(node):
     """Walk up from node; return the nearest for_stmt/while_stmt whose
     own body (not an else-suite) contains node, without crossing a
@@ -871,4 +900,5 @@ def check_keyword_binding(path, tree, tokens, versions):
 AST_RULES = [check_print, check_exec, check_backtick, check_raise_comma,
              check_dict_iter, check_builtin, check_stdlib, check_metaclass,
              check_tuple_param, check_async_reserved, check_keyword_binding,
-             check_ur_string, check_bad_unicode_escape, check_invalid_scope_use]
+             check_ur_string, check_bad_unicode_escape, check_invalid_scope_use,
+             check_mixed_bytes_literal]

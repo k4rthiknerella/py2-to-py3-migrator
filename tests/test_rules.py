@@ -12,6 +12,7 @@ from py2scan.rules.ast_rules import (
     check_invalid_scope_use,
     check_keyword_binding,
     check_metaclass,
+    check_mixed_bytes_literal,
     check_print,
     check_raise_comma,
     check_stdlib,
@@ -749,6 +750,40 @@ def test_escaped_backslash_before_u_is_not_a_bad_escape():
 
 def test_ordinary_escapes_are_not_flagged():
     assert rules(check_bad_unicode_escape, 'x = "\\n\\t\\x41"\n') == []
+
+
+def test_bytes_adjacent_to_plain_string_is_found():
+    # Real repro (independent check's round-3 held-back battery): valid
+    # Python 2.7 syntax (str and bytes are the same type there), a
+    # SyntaxError on every judged Python 3 version ("cannot mix bytes
+    # and nonbytes literals", confirmed on real 3.14.9).
+    assert rules(check_mixed_bytes_literal, 'x = b"a" "b"\n') == [(1, "PY3-MIXED-STR-BYTES")]
+
+
+def test_plain_string_adjacent_to_bytes_is_found():
+    assert rules(check_mixed_bytes_literal, 'x = "a" b"b"\n') == [(1, "PY3-MIXED-STR-BYTES")]
+
+
+def test_unicode_adjacent_to_bytes_is_found():
+    assert rules(check_mixed_bytes_literal, 'x = u"a" b"b"\n') == [(1, "PY3-MIXED-STR-BYTES")]
+
+
+def test_unicode_adjacent_to_plain_string_is_not_found():
+    # Both are text in Python 3 (the bare u prefix is a no-op there);
+    # only a bytes/non-bytes mismatch is the SyntaxError.
+    assert rules(check_mixed_bytes_literal, 'x = u"a" "b"\n') == []
+
+
+def test_two_bytes_literals_adjacent_is_not_found():
+    assert rules(check_mixed_bytes_literal, 'x = b"a" b"b"\n') == []
+
+
+def test_two_plain_strings_adjacent_is_not_found():
+    assert rules(check_mixed_bytes_literal, 'x = "a" "b"\n') == []
+
+
+def test_single_string_literal_is_not_found():
+    assert rules(check_mixed_bytes_literal, 'x = b"a"\n') == []
 
 
 def test_deep_nesting_below_threshold_is_not_found():
