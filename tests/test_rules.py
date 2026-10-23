@@ -48,6 +48,36 @@ def test_print_function_is_not_found():
     assert rules(check_print, src) == []
 
 
+def test_print_function_call_with_file_kwarg_parses_at_all():
+    # Regression test: real CPython 2.7 accepts print(x, file=y) once
+    # print_function is imported, but parso's static print_stmt grammar
+    # rejects the "file=y" keyword argument outright regardless of the
+    # future import (it has no concept of it) -- parse_source works
+    # around this (see _placeholder_print_if_future), so the whole file
+    # must still produce a tree rather than a ParseFailure.
+    src = "from __future__ import print_function\nimport sys\nprint('x', file=sys.stderr)\n"
+    tree, tokens, failure, compiles = parse_source("m.py", src.encode("ascii"))
+    assert failure is None, getattr(failure, "message", failure)
+    assert rules(check_print, src) == []
+
+
+def test_print_statement_without_future_import_still_found_after_fix():
+    # The placeholder substitution only triggers when print_function is
+    # actually imported; an ordinary print statement elsewhere must
+    # still be flagged normally.
+    assert rules(check_print, "x = 1\nprint x\n") == [(2, "PY3-PRINT")]
+
+
+def test_leftover_print_statement_under_future_import_still_fails_to_parse():
+    # A real bug: print_function makes "print" a plain name, so a
+    # leftover "print x" (no parens) in the same module is genuinely
+    # invalid under CPython too -- it must still fail to parse, not be
+    # silently accepted by the substitution.
+    src = "from __future__ import print_function\nprint x\n"
+    tree, tokens, failure, compiles = parse_source("m.py", src.encode("ascii"))
+    assert failure is not None
+
+
 def test_exec_statement_is_found():
     assert rules(check_exec, "exec 'x = 1'\n") == [(1, "PY3-EXEC-STMT")]
 

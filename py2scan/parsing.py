@@ -15,6 +15,7 @@ import io
 import re
 import sys
 import tokenize
+import warnings
 
 import parso
 from parso.parser import ParserSyntaxError
@@ -23,6 +24,42 @@ _GRAMMAR = parso.load_grammar(version="2.7")
 _ENCODING_TOKEN = getattr(tokenize, "ENCODING", None)
 _UR_PREFIX_RE = re.compile(r'[uU][rR](?=[\'"])')
 _UR_PREFIX_RE_BYTES = re.compile(br'[uU][rR](?=[\'"])')
+_PRINT_FUTURE_RE = re.compile(
+    r'^\s*from\s+__future__\s+import\s+.*\bprint_function\b', re.MULTILINE)
+_PRINT_FUTURE_RE_BYTES = re.compile(
+    br'^\s*from\s+__future__\s+import\s+.*\bprint_function\b', re.MULTILINE)
+_PRINT_WORD_RE = re.compile(r'\bprint\b')
+_PRINT_WORD_RE_BYTES = re.compile(br'\bprint\b')
+
+
+def _placeholder_print_if_future(source):
+    """CPython's real 2.7 parser honors `from __future__ import
+    print_function` for the whole module, making print(...) an ordinary
+    call expression - including forms parso's static print_stmt grammar
+    rejects outright, like print(x, file=y) (a keyword argument, never
+    valid as a print-statement operand). parso never adapts to
+    __future__ imports (see ast_rules._has_future_name). Detected via a
+    plain textual scan, since there is no tree yet to check: a false
+    positive (the text appearing inside a string or comment) is
+    vanishingly unlikely with the line-start anchor, and this file's own
+    check_print already suppresses PY3-PRINT findings under the same
+    condition, so the two layers agree either way.
+
+    Replace the word "print" with the same-width "pr1nt" wherever it
+    appears as its own word (never inside e.g. "print_function" or
+    "pprint" - \\b doesn't match there) so parso parses it as a plain
+    NAME/call instead of hitting the print_stmt production at all. If
+    the file mixes true function-call print() with a genuine leftover
+    print-statement line under the same future import, that line is a
+    real syntax error under CPython too and will correctly still fail
+    to parse after this substitution, for the same reason it fails for
+    real: "pr1nt x" is exactly as invalid as "print x" was."""
+    future_re = _PRINT_FUTURE_RE_BYTES if isinstance(source, bytes) else _PRINT_FUTURE_RE
+    if not future_re.search(source):
+        return source
+    word_re = _PRINT_WORD_RE_BYTES if isinstance(source, bytes) else _PRINT_WORD_RE
+    placeholder = b"pr1nt" if isinstance(source, bytes) else u"pr1nt"
+    return word_re.sub(placeholder, source)
 
 
 def _blank_ur_prefixes(source):
@@ -71,11 +108,18 @@ def _tokenize(source):
 
 
 def native_compiles(path, source):
-    """Whether the interpreter currently running us can compile() this file."""
-    try:
-        compile(source, path, "exec", 0, True)
-    except Exception:
-        return False
+    """Whether the interpreter currently running us can compile() this file.
+    A pure boolean check: compile() can also emit a SyntaxWarning (e.g. an
+    invalid escape sequence Python 2.7 never warned about) as a side
+    effect even when it succeeds, which is not one of py2scan's own
+    findings and would otherwise print to the user's terminal on every
+    scan of an unrelated file; suppressed here, not reported."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            compile(source, path, "exec", 0, True)
+        except Exception:
+            return False
     return True
 
 
@@ -96,6 +140,7 @@ def parse_source(path, source):
     ne_marker = b"<>" if isinstance(source, bytes) else u"<>"
     ne_replacement = b"!=" if isinstance(source, bytes) else u"!="
     grammar_source = source.replace(ne_marker, ne_replacement)
+    grammar_source = _placeholder_print_if_future(grammar_source)
     try:
         tree = _GRAMMAR.parse(grammar_source, error_recovery=False)
     except ParserSyntaxError as e:
