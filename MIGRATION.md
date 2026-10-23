@@ -54,7 +54,7 @@ derivation recorded. Not started; folded into the same R6/R7/R8 matrix work.
 ## Units
 | Unit | Owner | Runtime today | Effective target | Step | Level | Blockers (auto / manual) | Size | Next |
 |---|---|---|---|---|---|---|---|---|
-| py2scan | Karthik Nerella | 2.7.18 | 3.14 | 2.7.18 → 3.14 | L4 | 0 auto / 0 manual | S | `flip py2scan` (prepare only) |
+| py2scan | Karthik Nerella | 2.7.18 | 3.14 | 2.7.18 → 3.14 | L4 | 0 auto / 0 manual | S | owner: review Flip preparation section, merge/ship when ready (L5 only on confirmation) |
 
 L2 is proved by `.py-migrate/compile_check.py`, committed, run on both sides
 — see Evidence. L3 (this session): dependencies resolve on both sides (see
