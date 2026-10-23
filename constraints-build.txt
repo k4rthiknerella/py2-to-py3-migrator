@@ -1,0 +1,4 @@
+# Build-time pins. PyYAML 5.4.1 has no Python 2.7 aarch64 wheel, so pip builds it
+# from source in an isolated env that would otherwise fetch Cython 3, which
+# removed cython_sources and breaks that build.
+cython<3
