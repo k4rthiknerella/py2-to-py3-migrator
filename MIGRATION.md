@@ -5,7 +5,7 @@ test: "pytest"
 compat: straddle
 ---
 # Python migration
-As of 2026-10-23 · commit 00e4045 · path: 2.7 -> 3.14
+As of 2026-10-23 · commit 911ce3a · path: 2.7 -> 3.14
 
 py2scan migrates itself (not the codebases it scans) from its historical
 Python 2.7 runtime to Python 3.14, straddling both for as long as any
