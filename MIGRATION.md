@@ -51,7 +51,7 @@ derivation recorded. Not started; folded into the same R6/R7/R8 matrix work.
 ## Units
 | Unit | Owner | Runtime today | Effective target | Step | Level | Blockers (auto / manual) | Size | Next |
 |---|---|---|---|---|---|---|---|---|
-| py2scan | Karthik Nerella | 2.7.18 | 3.14 | 2.7.18 → 3.14 | L3 | 0 auto / 0 manual | S | `verify py2scan` |
+| py2scan | Karthik Nerella | 2.7.18 | 3.14 | 2.7.18 → 3.14 | L4 | 0 auto / 0 manual | S | `flip py2scan` (prepare only) |
 
 L2 is proved by `.py-migrate/compile_check.py`, committed, run on both sides
 — see Evidence. L3 (this session): dependencies resolve on both sides (see
@@ -60,12 +60,13 @@ believed to resolve), no stored data for this CLI tool, runtime surfaces
 have a plan (see Runtime surfaces), and the 0/0 blocker count above is
 itself the "no open blockers" proof. No consumers import py2scan as a
 library (it is a CLI-only unit), so there is no import-graph wave ordering
-to apply. Not yet bumped to L4: the full suite has passed on both real
-interpreters after every commit this session (see Evidence, repeatedly),
-which is L4's actual bar, but that's informal/incidental evidence
-accumulated along the way, not a deliberate `verify` pass — leaving the
-explicit `verify py2scan` step to actually declare it, rather than
-inferring the level quietly.
+to apply. L4 (this session, deliberate `verify` pass at commit `0f40071`,
+not the informal evidence accumulated along the way): full suite, 2.7.18
+(source) and 3.14.7 + 3.14.9 (target, two patch versions on purpose — see
+the check_ne_op defect this session for why one patch version isn't
+trustworthy alone) — all clean; `compile_check.py` clean on both;
+`flake8 --max-complexity 10` clean on both. No data jobs, so no parity run
+applies. See Evidence for the exact commands and results.
 
 ## Path
 One step: 2.7.18 → 3.14, straddling. There is no bridge release to find: the
@@ -712,6 +713,11 @@ any other process (no pickle, cache, queue, or database).
 | 2026-10-22 | cc12b90 | py2scan | (bad-byte filename fix) | same fixture, all 3 formats, after adding `encoding.py:safe_text` | 0 crashes on either interpreter; output identical across both (`bad_�_name.py`) |
 | 2026-10-22 | cc12b90 | py2scan | (bad-byte filename fix, full suite) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), 3.14.9 (Docker `python:3.14-slim`) | `117 passed, 2 skipped` on 2.7.18; `112 passed, 7 skipped` on 3.14.7 (2 new tests skip - Mac host filesystem rejects the fixture); `112 passed, 7 skipped` on 3.14.9 (2 new tests pass - Linux) |
 | 2026-10-22 | cc12b90 | py2scan | (bad-byte filename fix, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker `python:2.7.18-slim`, ad hoc `flake8<4`) and 3.14.7 (Homebrew venv) | 0 violations of any kind, both interpreters |
+| 2026-10-22 | 0f40071 | py2scan | 2.7.18→3.14 | L4 (`verify`, deliberate pass, not incidental) | `docker build -q -f Dockerfile.test -t py2scan-test . && docker run --rm -v "$PWD":/app -w /app py2scan-test python -m pytest -q -p no:cacheprovider tests` | `117 passed, 2 skipped` |
+| 2026-10-22 | 0f40071 | py2scan | 2.7.18→3.14 | L4 (`verify`) | `python3.14 -m pytest -q -p no:cacheprovider tests` (3.14.7, Homebrew venv) | `112 passed, 7 skipped` |
+| 2026-10-22 | 0f40071 | py2scan | 2.7.18→3.14 | L4 (`verify`) | same command inside `python:3.14-slim` (3.14.9, matching CI) | `112 passed, 7 skipped` |
+| 2026-10-22 | 0f40071 | py2scan | 2.7.18→3.14 | L4 (`verify`, compile_check) | `.py-migrate/compile_check.py` against every tracked file (`git ls-files`), on 2.7.18 (Docker) and 3.14.7 | `checked 17, failed 0, unreadable 0` on both |
+| 2026-10-22 | 0f40071 | py2scan | 2.7.18→3.14 | L4 (`verify`, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker, ad hoc `flake8<4`) and 3.14.7 | 0 violations, both interpreters |
 
 ## Decisions
 - 2026-10-22, owner: `.md`-commit exception for `MIGRATION.md` and
