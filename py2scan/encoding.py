@@ -27,23 +27,36 @@ def decode_source_lines(raw_bytes):
 
 def display_path(rel):
     """A relative path, guaranteed safe to hand to json.dumps or a
-    unicode %-format: a filename with bytes that aren't valid in the
-    filesystem encoding (hostile input, not hypothetical - the real
-    repro is a file literally named with a raw non-UTF-8 byte) comes
-    back from os.path.relpath() on Python 2 as a `str` (bytes) no
-    different in type from any other path. Used as-is, it still reaches
-    the real filesystem correctly (os.path.join + open() need the exact
-    original bytes - never pass this function's result to either), but
-    it crashes json.dumps() the moment it becomes a dict key or value:
-    Python 2's json encoder decodes `str` as UTF-8 and raises
-    UnicodeDecodeError, taking the whole scan down with it, not just
-    that one file. Call this only at an output boundary (JSON, text),
-    never for anything used to open a file afterward. Python 3's
-    os.walk already returns `str` for every path (surrogateescape at
-    the OS layer, always valid unicode), so there is nothing to do
-    there. 'surrogateescape' isn't even a decode error handler Python
-    2.7 recognizes, so 'replace' is this side's equivalent, not a
-    weaker stand-in for it."""
-    if sys.version_info[0] < 3 and isinstance(rel, str):
-        return rel.decode("utf-8", "replace")
-    return rel
+    unicode %-format, and guaranteed to render identically on both
+    hosts for the same real bytes: a filename with bytes that aren't
+    valid in the filesystem encoding (hostile input, not hypothetical -
+    the real repro is a file literally named with a raw non-UTF-8 byte)
+    comes back from os.path.relpath() looking different on each host.
+    Used as-is, it still reaches the real filesystem correctly either
+    way (os.path.join + open() need the exact original bytes - never
+    pass this function's result to either), but display is a different
+    question from access.
+
+    On Python 2, it is a `str` (bytes) no different in type from any
+    other path; left alone, it crashes json.dumps() the moment it
+    becomes a dict key or value (Python 2's json encoder decodes `str`
+    as UTF-8 and raises UnicodeDecodeError, taking the whole scan down
+    with it, not just that one file).
+
+    On Python 3, os.walk already decoded it to `str` - but via
+    surrogateescape at the OS layer, which round-trips the exact
+    original bytes through *lone surrogate code points*, not through
+    the same U+FFFD replacement Python 2's "replace" error handler
+    produces. json.dumps() does not raise on a lone surrogate (it just
+    writes it out as a \\udcXX escape), so left alone, Python 3's JSON
+    output byte-differs from Python 2's for the identical real file -
+    R2's guarantee, broken by two correct-in-isolation defaults that
+    disagree with each other. Undo the surrogateescape round-trip back
+    to the original bytes, then apply the exact same utf-8/"replace"
+    step the Python 2 side uses, so both hosts converge on the same
+    U+FFFD text for the same bytes."""
+    if sys.version_info[0] < 3:
+        if isinstance(rel, str):
+            return rel.decode("utf-8", "replace")
+        return rel
+    return rel.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
