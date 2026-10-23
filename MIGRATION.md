@@ -1010,57 +1010,301 @@ against a real reproduction of AutoSteer's own `hostile/nul_byte` case
 Full suite: 146 passed, 2 skipped (2.7.18); 139 passed, 9 skipped
 (3.14.7, 3.14.9). flake8 `--max-complexity 10` clean on all three.
 
-**Investigated, not fixed — flagging for an architect ruling rather than
-guessing: `hostile/deep_nesting` (R1).** AutoSteer: "real 3.6-3.8 cannot
-compile [a file with 150 nested parentheses], and the scan on 3.14
-reports no blocker for 3.6-3.8." Confirmed directly: real `python:3.14-
-slim` parses 150-deep nesting with zero errors and zero findings (no
-rule exists for "this nests too deep for an older Python 3.x minor"), so
-when py2scan itself runs on 3.14 and judges readiness for 3.6-3.8, there
-is genuinely nothing in the scan that could produce a blocker for those
-versions - a real R1 gap, same shape as the `ur`-string/`\u`-escape fix
-above.
+**Resolved, commit `04f2aa1`: `hostile/deep_nesting` (R1), via a new
+rule, `PY3-NESTING-DEPTH`.** AutoSteer: "real 3.6-3.8 cannot compile [a
+file with 150 nested parentheses], and the scan on 3.14 reports no
+blocker for 3.6-3.8." A prior pass here investigated this and declined
+to ship a rule, reasoning that the crossover depth is a pathological-
+input *parser resource limit*, not a fixed language-grammar fact, and
+that it did not track "parser generation" cleanly across 2.7.18, 3.6.15,
+3.7 and 3.8. The architect's reply pointed back to the existing rulings
+rather than issuing a new one: R1 requires every such input recorded as
+a defect with the input attached, not accepted as a divergence; "accept
+with an expiry" is item 4's mechanism for security advisories only, not
+a general escape hatch; and R6/R7 already say version facts come from
+the interpreters themselves, tested against a final release of each one
+- which is exactly what this project's other per-version tables
+(`BUILTIN_NAMES`, `STDLIB_REMOVED_SINCE`) already do. Redone properly
+against all 10 judged versions' own final releases (3.6.15, 3.7.17,
+3.8.20, 3.9.25, 3.10.19, 3.11.14, 3.12.12, 3.13.12, 3.14.7, 3.15.1 - the
+same releases `BUILTIN_NAMES`/`STDLIB_REMOVED_SINCE` were measured
+against) rather than the mixed, partial set used the first time:
 
-The difference: that fix encoded a fixed *language grammar* fact (a
-string prefix is either valid or not, in every CPython build of a given
-major version, with no exceptions found). This one is not a language
-fact - it is a pathological-input *parser resource limit*, and measuring
-it empirically only deepens the problem instead of solving it. Found the
-exact crossover depth against real Docker images for each version,
-expecting a clean "old parser vs. new PEG parser" story (PEG, introduced
-in 3.9, is known to handle deep nesting far better) and instead found
-one that does not generalize:
+| Version | `()` crossover | `[]` crossover | `{}` crossover |
+|---|---|---|---|
+| 2.7.18 (source, not judged) | 98 / 99 | 98 / 99 | 98 / 99 |
+| 3.6.15 | 92 / 93 | 92 / 93 | 92 / 93 |
+| 3.7.17 | 92 / 93 | 92 / 93 | 92 / 93 |
+| 3.8.20 | 98 / 99 | 98 / 99 | **104 / 105** |
+| 3.9.25 | 200 / 201 | 200 / 201 | 200 / 201 |
+| 3.10.19 | 200 / 201 | 200 / 201 | 200 / 201 |
+| 3.11.14 | 200 / 201 | 200 / 201 | 200 / 201 |
+| 3.12.12 | 200 / 201 | 200 / 201 | 200 / 201 |
+| 3.13.12 | 200 / 201 | 200 / 201 | 200 / 201 |
+| 3.14.7 | 200 / 201 | 200 / 201 | 200 / 201 |
+| 3.15.1 | 200 / 201 | 200 / 201 | 200 / 201 |
 
-| Version | Last depth that compiles | First depth that fails |
-|---|---|---|
-| 2.7.18 | 98 | 99 |
-| 3.6.15 | ≤94 (95 already fails) | ≤95 |
-| 3.7 | ≤94 (95 already fails) | ≤95 |
-| 3.8 | 98 | 99 |
-| 3.14.9 | ≥150 (not yet found) | not found |
+("crossover" = last depth that compiles / first depth that fails, each
+measured by binary search directly against `python:<version>-slim`.)
 
-3.6 and 3.7 fail at a *lower* depth than both 2.7.18 and 3.8, despite
-all four nominally sharing the same old pgen-based C parser - the limit
-does not even track "which parser generation" cleanly, let alone a
-single round number. A hard-coded threshold would be wrong in both
-directions depending on which judged version it is checked against, and
-this was only measured for one specific nesting *shape* (parentheses);
-there is no reason to expect lists, dicts, or chained calls to consume
-the same per-level amount of parser stack, so one threshold would not
-even generalize across shapes. R9's own principle is that per-version
-blocker logic must be reliable static knowledge, not a guess calibrated
-against whichever interpreters happened to be on hand - this limit does
-not currently qualify as that, where the grammar-level 2-vs-3 facts this
-whole tool is built on do.
+This is a cleaner result than the first pass found, for a concrete
+reason: 3.9 through 3.15 (the PEG parser, introduced in 3.9) all hit the
+*exact same* depth, 201, for every bracket shape, and the `SyntaxError`
+each one raises literally says `"too many nested parentheses"` even when
+the source nests `[]` or `{}` instead - a single hardcoded, shape-
+agnostic constant, not a resource limit, confirmed identical across
+three final releases spanning the whole range (3.9.25, 3.14.7, 3.15.1).
+That qualifies as the kind of static, version-level fact R9 asks for.
+The old pgen parser (2.7, 3.6-3.8) is still a real stack-depth resource
+limit, not a constant, and 3.8.20 proves it: `()`/`[]` fail at 99, but
+`{}` (a nested dict literal, `{0:{0:{0:...}}}`) fails only at 105,
+confirmed deterministic across three repeated runs. Using the *lower* of
+the two measured shapes per version, rather than either alone, is the
+direction that can never under-report a real blocker (R1) - at the cost
+of a narrow, already-disclosed over-block for 3.8-only dict nesting
+between depth 99 and 104, which R1 does not forbid.
 
-Not shipping a rule for this. Flagging it as what it is: a real,
-confirmed R1 gap with no proposed fix, for the architect to rule on (an
-accepted limitation with an expiry, a much deeper empirical study across
-every judged version and nesting shape, or something else) - the owner
-decision this session already has on file (questions go to the
-architect, not the owner; implementation choices are the worker's) does
-not cover a case where the worker's own empirical findings cut against
-every implementation choice available.
+`check_nesting_depth` (`py2scan/rules.py`) counts `(`, `[` and `{`
+together as one depth from the token stream (matching the tokenizer's
+own combined accounting - confirmed directly that alternating bracket
+kinds reach the same combined crossover as either kind alone, on both
+a pgen version and a PEG version) and, for each judged version whose
+measured limit the file's max depth exceeds, adds a `PY3-NESTING-DEPTH`
+blocker scoped to exactly that subset - the same per-version scoping
+`check_stdlib_import` already does for `PY3-STDLIB`. It runs as a new
+`VERSION_AWARE_TOKEN_RULES` list, parallel to the existing
+`VERSION_AWARE_AST_RULES`; `scanner.scan_file` gained one more dispatch
+loop for it, which pushed its own McCabe complexity to 11 - fixed by
+pulling all four rule-dispatch loops into a new `_run_rules` helper
+(`scanner.py`), dropping `scan_file` back under the `--max-complexity
+10` limit. Item 5's "two files" claim is unaffected for a rule added to
+an *existing* list; introducing a new list is the same, already-
+established exception `VERSION_AWARE_AST_RULES` itself is.
+
+The token stream can only ever hand this rule a depth up to the running
+interpreter's own limit: on 3.9+, the C tokenizer enforces the identical
+200 the parser does (confirmed directly - tokenizing depth 201 itself
+raises `TokenError("too many nested parentheses")` on 3.14.7, independent
+of `ast.parse`), so `scanner.scan_file`'s own `_tokenize` call would
+already have raised before this rule could run. The gap it closes is
+exactly between a judged version's own, possibly lower, limit and the
+running interpreter's - which is where `hostile/deep_nesting`'s 150
+sits relative to 3.14 (200) and 3.6-3.8 (<=98).
+
+Verified directly against a real reproduction of `hostile/deep_nesting`
+(`ok.py` + a 150-deep-nested `t.py`), scanned under the 3.14.7 venv:
+`file_readiness` now reads `{"ok.py": [...all 10...], "t.py": [3.9
+through 3.15]}` - `t.py` is correctly excluded from 3.6, 3.7 and 3.8,
+closing the exact gap AutoSteer reported, with one `PY3-NESTING-DEPTH`
+finding naming all three.
+
+This does not fully close the `file_readiness` divergence between a 2.7
+scan and a 3.14 scan of the same file, reported separately below (the
+2.7-side scan still fails `ast.parse` outright at depth 150 - its own
+limit is 98 - and so still reports the blanket, every-judged-version
+PY3-PARSE fallback, over-blocking 3.9-3.15 where the 3.14-side scan now
+correctly does not); that remainder is the same open defect against item
+2b, not a new one, and R1 does not forbid the over-block direction.
+
+8 new tests (`tests/test_rules.py`): within every judged limit, at the
+exact measured boundary (92, not blocked) and one past it (93, blocked),
+scoped to only the versions actually exceeded, every queried version
+blocked when all are exceeded, mixed bracket kinds counted as one shared
+depth, and no brackets at all. One new integration test
+(`tests/test_scanner.py`), skipped below Python 3.9 (needs a running
+interpreter whose own parser can reach depth 150 to exercise this
+rule at all): the exact `hostile/deep_nesting` shape, confirming
+`PY3-NESTING-DEPTH` fires scoped to `("3.8",)` out of
+`("3.8", "3.9", "3.14")`.
+
+Full suite: 153 passed, 3 skipped (2.7.18); 147 passed, 9 skipped
+(3.14.7, 3.14.9). flake8 `--max-complexity 10` clean on all three.
+compile_check clean (17 files, 0 failed, 0 unreadable) on 2.7.18 and
+3.14.7.
+
+**Resolved, commit `04f2aa1`: a held-back AutoSteer CI input, a non-text
+PEP 263 coding declaration (R1), via a new rule,
+`PY3-NON-TEXT-CODING`.** Repro: a file starting `# -*- coding: rot13
+-*-` followed by `k = 1`. Real 2.7.18 compiles this cleanly - 2.7 runs no
+check on the coding declaration's codec beyond "can I look it up," and
+rot13-decoding "k" produces "x", so the whole file decodes to the valid
+statement `x = 1`. Every real Python 3.6-3.15 rejects it outright
+(confirmed directly on 3.6.15 and 3.14.7): `SyntaxError: 'rot13' is not
+a text encoding; use codecs.decode() to handle arbitrary codecs`. Python
+3's codec registry marks a specific set of codecs `_is_text_encoding =
+False` and refuses to use them as a source-file encoding; 2.7's codec
+registry has the same attribute but marks `rot13` `True` there, so the
+rejection is a real Python-3-wide fact, not a build quirk - confirmed
+identical across three final releases spanning the whole judged range
+(3.6.15, 3.9.25, 3.15.1) via direct introspection
+(`codecs.lookup(name)._is_text_encoding`), and identical canonical
+names (`codecs.lookup(name).name`) on 2.7.18 and 3.14.7 for every alias:
+`base64`, `bz2`, `hex`, `quopri`, `rot-13`, `uu`, `zlib`.
+
+`check_non_text_coding_declaration` (`py2scan/rules.py`) calls the
+existing `py2scan.encoding.detect_encoding` directly on the raw source
+bytes and checks the resolved codec's canonical name against that set.
+It runs as a new `SOURCE_RULES` list (rules reading raw source bytes,
+rather than the AST or token stream) - another case, like
+`VERSION_AWARE_TOKEN_RULES` above, where a genuinely new rule *category*
+needs `scanner.py` wiring beyond item 5's "two files" claim for an
+existing list. An unrecognized codec name entirely (`detect_encoding`
+itself raising) is the already-documented item 2b divergence
+(`invalid_coding`), not this rule's concern, and is excluded explicitly.
+On an interpreter where `lib2to3` is gone (3.13+, where
+`py2scan.encoding` falls back to the real `tokenize.detect_encoding`),
+that real implementation runs this same non-text check itself and
+raises `LookupError` before this rule's own check would even run
+(confirmed directly on 3.14.7) - harmless in the real pipeline, since
+`scan_file`'s own `ast.parse` already raises for the identical input on
+any such interpreter, so this rule is never reached there outside a
+direct call (which is what the two tests gated on this - skipped on
+3.13+ - exercise).
+
+Verified end to end against a real reproduction of the exact repro,
+scanned under `scan_file`: `PY3-NON-TEXT-CODING` fires on 2.7.18;
+`PY3-PARSE` fires on 3.14.7 (its own `ast.parse` already rejects the
+coding declaration) - R1 holds on both sides, same recorded shape as
+`print`/`exec`/backtick/raise-comma. 7 new tests (`tests/test_rules.py`):
+the exact repro, every non-text alias, an ordinary `utf-8` declaration
+and no declaration at all (both not found), and an unrecognized codec
+name (not found - the other rule's job). 1 new integration test
+(`tests/test_scanner.py`) confirming the cross-interpreter R1 shape.
+
+**Resolved, commit `04f2aa1`: R8, `STDLIB_REMOVED_SINCE` missing 10
+real modules.** AutoSteer CI repro: stdlib `sunau.py` line 395, `import
+audioop`, got no finding on a 2.7 scan at all. Re-derived the whole
+table properly this time against all 10 judged versions' own final
+releases (3.6.15 through 3.15.1 - the same releases `BUILTIN_NAMES` was
+already measured against), rather than the mixed, partial set a
+previous pass used, and found 10 names genuinely missing:
+`future_builtins`, `gdbm`, `linuxaudiodev` and `strop` (gone at the
+2-vs-3 boundary, the same "3.6" bucket as `urllib2`); `parser` (removed
+in 3.10, replaced by the PEG-based `ast` module); and `audioop`,
+`crypt`, `nis`, `ossaudiodev`, `spwd` (removed in 3.13, PEP 594 - sitting
+right alongside `aifc`/`cgi`/`cgitb`/... already correctly in that same
+batch).
+
+Those last five needed real care: testing each by directly importing it
+against the slim test images makes every one of them look removed as
+early as 3.9, well before their real PEP 594 removal - because each
+needs a system library (NIS, crypt, an audio device) the slim images
+never ship, for any version, not because Python stopped shipping the
+module. Caught by cross-checking `sys.stdlib_module_names` instead
+(3.10+, a list of what CPython's own distribution ships, independent of
+whether the optional C extension actually built in this environment):
+all five are `True` at 3.10 and 3.12 and `False` starting at 3.13,
+matching PEP 594 and the already-correct batch exactly - confirming the
+slim images' earlier-looking import failures were a build artifact of
+that image, not a removal. All 10 names confirmed to genuinely import on
+real 2.7.18 first (R8 only applies to something that actually worked
+there).
+
+Verified directly against the exact repro (`import audioop` compiled
+against real `sunau.py:395`'s surrounding code) and 9 new tests
+(`tests/test_rules.py`) covering all 10 names, including the version-
+scoping check for the PEP 594 batch (`("3.12", "3.13")` judged -> blocked
+only on `3.13`).
+
+**Resolved, commit `04f2aa1`: R3/R10, `PY3-BUILTIN` missing a default
+value's and a decorator's own enclosing scope.** AutoSteer CI repro:
+stdlib `json/encoder.py` line 276, `def _make_iterencode(..., \`\`
+basestring=basestring, ..., long=long, ...):` - a real, deliberate hand-
+optimization ("turn globals into locals" for speed) that this rule
+missed both builtin uses on. This is exactly the gap `check_builtin_use`'s
+own docstring already named and chose not to fix ("a parameter default
+value or a decorator is real Python's enclosing scope, not the
+function's own... rare enough... not fixed here") - the real stdlib
+proved it is not rare enough to leave open. Real Python evaluates a
+default value (and a decorator) at `def`-time, in the scope the `def`
+statement itself sits in - the parameter named `basestring` does not
+exist yet when its own default value `basestring` is evaluated, so that
+reference resolves to the builtin, which is gone on Python 3 (a real
+`NameError` at def time, confirmed by the stdlib miss itself needing
+exactly this fix).
+
+Fixed in `_builtin_use_in_function` and `_builtin_use_in_lambda`
+(`py2scan/rules.py`): a new `_default_value_exprs` helper collects every
+default-value expression (`args.defaults` and non-`None` entries of
+`args.kw_defaults`), and both are now walked with the *enclosing*
+`scope_chain` passed in - not the new, inner one built for the
+function's own body - exactly like the existing decorator-list walk
+added alongside it. `check_builtin_use`'s docstring no longer calls this
+an accepted gap, since it no longer is one.
+
+5 new tests (`tests/test_rules.py`): the exact repro shape (two
+builtins, same signature, each its own name as its default - both
+found), a different parameter shadowing an unrelated builtin's default
+(found), the ordinary case where a same-named parameter really does
+shadow its own body (not found - unaffected), a decorator (found), and
+the lambda-default equivalent (found - the same gap existed there too,
+unprompted but adjacent, since lambda parameter defaults are the
+identical enclosing-scope case and were not walked at all before this
+fix).
+
+Full suite after both of the above: 167 passed, 3 skipped (2.7.18); 159
+passed, 11 skipped (3.14.7). flake8 `--max-complexity 10` clean on both.
+
+**Corrected, commit `04f2aa1`: item 2b, `nul_byte` and `invalid_coding`
+were not R1-forced divergences - the architect's reply pointed out that
+R1 only allows a difference the compile guarantee actually requires, and
+requires neither of these; the record's "no code change is possible"
+claim had no receipt.** Checked directly against real 2.7.18 and real
+3.14.7: for `invalid_coding` (an unrecognized codec name), the raw
+`SyntaxError.msg` text is **byte-identical** on both interpreters -
+`unknown encoding: no-such-codec` - and was only ever made to differ by
+this code's own wrapper, `"does not parse under Python %s: %s" %
+(platform.python_version(), message)`, which named the exact running
+interpreter. That naming was added earlier this session for a real,
+separate reason (the `check_ne_op` regression proved 3.14.7 and 3.14.9
+can disagree about tokenizing identical source, so the exact patch
+version seemed worth keeping), but R1's guarantee never required it, so
+it was an unforced, avoidable divergence - removed. For `nul_byte`, the
+raw message genuinely differs (2.7 raises `TypeError: compile()
+expected string without null bytes`; 3.x raises `SyntaxError: source
+code string cannot contain null bytes` - a real, built-in difference,
+not this code's own decoration), so it now gets a fixed, interpreter-
+independent message instead of passing either one through:
+`does not parse: source contains an embedded NUL byte`.
+
+Verified with the real receipt the previous record said didn't exist: a
+real reproduction of both `hostile/nul_byte` and `hostile/invalid_coding`
+(`ok.py` + `t.py` each), scanned under real 2.7.18 (Docker) and real
+3.14.7 (Homebrew venv) and diffed byte-for-byte - **identical JSON on
+both sides for both cases**, where before this fix both differed. 3 of
+the previously-passing tests needed updating for the new message
+wording (`tests/test_scanner.py`): the message-precision test is now a
+message-stability test (asserts "Python" is absent, not present), plus
+2 new tests pinning the exact byte-identical message text for each
+case.
+
+Full suite: 169 passed, 3 skipped (2.7.18); 161 passed, 11 skipped
+(3.14.7). flake8 `--max-complexity 10` clean on both.
+
+**Not resolved - a genuine, newly-found manual blocker, not yet in the
+Units table: `MarkupSafe==1.1.1` does not resolve with a wheel for the
+3.14 target (L3).** Flagged by AutoSteer CI pointing out the previous L3
+Evidence row recorded no resolver output. Getting the real resolver
+output this time (see Evidence, 2026-10-23) surfaced a genuine gap the
+aggregated check had missed: `uv pip compile requirements.txt
+--python-version 3.14 --python-platform linux --only-binary :all:`
+reports "No solution found" because `MarkupSafe==1.1.1` has no usable
+wheel for 3.14 - confirmed against PyPI's own file listing directly
+(wheels only through cp39). It still installs today via a source build
+that happens to degrade gracefully to a pure-Python wheel (see the
+corrected Dependencies row), which is why the earlier "verified: imports"
+check missed this - import success after a build already happened is
+not the same evidence as a wheel-only resolve succeeding.
+
+Not fixed here: the only real fix is bumping the pin, a dependency
+version change this project's own standing rule reserves for explicit
+owner approval ("Dependencies are pinned for 2.7 in requirements.txt:
+never upgrade or add one"). This is the architect's call, not a worker
+implementation choice - flagging it rather than guessing. The Units
+table's "0 auto / 0 manual" and L4 status above predate this finding and
+have not been changed here; whether this should move the blocker count
+to "0 auto / 1 manual," hold the unit at L3 instead of L4, or be
+accepted with a documented reason is for the architect to decide.
 
 ## Flip preparation (prepared, not executed — see commit `09a45fd` for the
 one piece of infra this added; nothing below was merged, shipped, or
@@ -1120,7 +1364,7 @@ way a running service would have.
 |---|---|---|---|---|
 | click | 7.1.2 | source + target | Yes, both (verified: imports under 2.7.18 and 3.14.7 unchanged) | empirical, this session |
 | Jinja2 | 2.11.3 | source + target | Yes, both (verified) | empirical, this session |
-| MarkupSafe | 1.1.1 | source + target | Yes, both (verified) | empirical, this session |
+| MarkupSafe | 1.1.1 | source + target | 2.7: yes (wheel). 3.14: **no wheel** - PyPI ships wheels for this pin only through cp39; `uv pip compile --only-binary :all:` for 3.14 fails outright ("has no usable wheels"), confirmed against PyPI's own file listing, not just this one resolver. It still *installs* on 3.14 today because pip's default (non-`--only-binary`) behavior falls back to the sdist, and that sdist's C speedup extension degrades gracefully to a pure-Python wheel when it can't build one - confirmed directly on a bare `python:3.14-slim` with no extra setup. That is not the same as resolving with a wheel; it depends on every future build environment reaching the same graceful-degradation path, which is exactly the fragility L3's wheel requirement exists to catch. Corrected this session - the original "Yes, both (verified)" row only proved the import succeeded somewhere a source build had already happened, not that a fresh, wheel-only resolve would | empirical, this session (see Evidence and Blockers) |
 | PyYAML | 5.4.1 | source | Yes, 2.7 only, and only with the existing `constraints-build.txt` (`cython<3`) — already documented in this repo | project's own `constraints-build.txt` + empirical |
 | PyYAML | 5.4.1 | target | **No** — fails to build on 3.14.7 even with `cython<3`; `AttributeError: 'build_ext' object has no attribute 'cython_sources'` regardless of Cython pin (verified) | empirical, this session |
 | PyYAML | 6.0.3 | target | Yes (verified: installs and imports cleanly on 3.14.7, no build-from-source needed) | empirical, this session |
@@ -1199,7 +1443,8 @@ any other process (no pickle, cache, queue, or database).
 | 2026-10-22 | cc12b90 | py2scan | (bad-byte filename fix) | same fixture, all 3 formats, after adding `encoding.py:safe_text` | 0 crashes on either interpreter; output identical across both (`bad_�_name.py`) |
 | 2026-10-22 | cc12b90 | py2scan | (bad-byte filename fix, full suite) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), 3.14.9 (Docker `python:3.14-slim`) | `117 passed, 2 skipped` on 2.7.18; `112 passed, 7 skipped` on 3.14.7 (2 new tests skip - Mac host filesystem rejects the fixture); `112 passed, 7 skipped` on 3.14.9 (2 new tests pass - Linux) |
 | 2026-10-22 | cc12b90 | py2scan | (bad-byte filename fix, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker `python:2.7.18-slim`, ad hoc `flake8<4`) and 3.14.7 (Homebrew venv) | 0 violations of any kind, both interpreters |
-| 2026-10-22 | 0f40071 | py2scan | 2.7.18→3.14 | L3 (flagged missing by AutoSteer CI after the fact; added here, not re-dated) | aggregation, not a single command: Units table blocker count (0 auto / 0 manual, confirmed by this session's R6–R10/R11/sweep closures above), every `requirements.txt` pin re-checked against the Dependencies table's own "Yes, both (verified)" rows (actual installs/imports, not a resolver dry-run), Runtime surfaces table's existing plan, no stored data for this CLI tool | all four L3 preconditions hold; no single command produces this level, which is why the row was easy to miss — recorded explicitly now so the next level transition doesn't repeat the gap |
+| 2026-10-22 | 0f40071 | py2scan | 2.7.18→3.14 | L3 (flagged missing by AutoSteer CI after the fact; added here, not re-dated) | aggregation, not a single command: Units table blocker count (0 auto / 0 manual, confirmed by this session's R6–R10/R11/sweep closures above), every `requirements.txt` pin re-checked against the Dependencies table's own "Yes, both (verified)" rows (actual installs/imports, not a resolver dry-run), Runtime surfaces table's existing plan, no stored data for this CLI tool | **Corrected 2026-10-23 (flagged by AutoSteer CI): wrong.** The skill's own level table requires L3's proof to be "Resolver output and MIGRATION.md" - this row recorded no resolver output at all, and the aggregation it did record rested on "verified: imports," which is weaker than resolves-with-a-wheel (see the row below, and the corrected MarkupSafe row in Dependencies) |
+| 2026-10-23 | n/a (research, no code change; correction of the row above) | py2scan | 2.7.18→3.14 | (real L3 resolver output) | `uv pip compile requirements.txt --python-version 3.14 --python-platform linux --only-binary :all:` | **No solution found**: `markupsafe==1.1.1 has no usable wheels and you require markupsafe==1.1.1` ("Wheels are required... because building from source is disabled"). Isolated: `click==7.1.2`, `Jinja2==2.11.3` and `PyYAML==6.0.3` each resolve alone with a wheel for 3.14; `MarkupSafe==1.1.1` alone does not - it is the one pin blocking the whole file. Cross-checked against PyPI's own file listing for `MarkupSafe==1.1.1` directly (`GET pypi.org/pypi/MarkupSafe/1.1.1/json`): wheels exist only for cp27/cp34 through cp39, no cp310+ at all, so this isn't a resolver quirk - the real L3 precondition ("dependencies resolve with wheels for the step") does not hold for the current pin. Not fixed here: bumping the pin is a dependency-version change, which this project's own standing rule reserves for explicit owner approval ("Dependencies are pinned for 2.7 in requirements.txt: never upgrade or add one") - flagging the corrected status for the architect's call, not re-leveling the Units table unilaterally |
 | 2026-10-22 | 0f40071 | py2scan | 2.7.18→3.14 | L4 (`verify`, deliberate pass, not incidental) | `docker build -q -f Dockerfile.test -t py2scan-test . && docker run --rm -v "$PWD":/app -w /app py2scan-test python -m pytest -q -p no:cacheprovider tests` | `117 passed, 2 skipped` |
 | 2026-10-22 | 0f40071 | py2scan | 2.7.18→3.14 | L4 (`verify`) | `python3.14 -m pytest -q -p no:cacheprovider tests` (3.14.7, Homebrew venv) | `112 passed, 7 skipped` |
 | 2026-10-22 | 0f40071 | py2scan | 2.7.18→3.14 | L4 (`verify`) | same command inside `python:3.14-slim` (3.14.9, matching CI) | `112 passed, 7 skipped` |
