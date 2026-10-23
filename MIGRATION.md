@@ -5,7 +5,7 @@ test: "pytest"
 compat: straddle
 ---
 # Python migration
-As of 2026-10-22 · commit 1cb4a2c · path: 2.7 -> 3.14
+As of 2026-10-22 · commit 2b0f53c · path: 2.7 -> 3.14
 
 py2scan migrates itself (not the codebases it scans) from its historical
 Python 2.7 runtime to Python 3.14, straddling both for as long as any
@@ -185,6 +185,9 @@ Never merged into this branch or `main`; never pushed.
 | 2026-10-22 | 63dec51 | py2scan | 2.7->3.14 | L4 | added PEP 263 BOM handling (`py2scan/encoding.py`) + 2 tests; `pytest -q` and `flake8` both interpreters | `97 passed` both sides, flake8 exit 0 both sides |
 | 2026-10-22 | adcedd4 | py2scan | 2.7->3.14 | flip (prepared) | branch `py-migrate/py2scan-flip`: dropped `python_version<"3"` pins, `python_requires=">=3.14"`; `pytest -q` and `flake8`, Python 3.14.3 only (2.7 deliberately not tested -- that's the point of this branch) | `97 passed`, flake8 exit 0 |
 | 2026-10-22 | 1cb4a2c | py2scan | 2.7->3.14 | L3 (R5 gap found + closed) | found R5's exit(2)/unreadable-file path had no end-to-end test (only a report.py test feeding a hand-built `ScanResult`); added a scanner-level test (`chmod 0o000`) and a CLI-level test; `pytest -q` and `flake8`, both interpreters (both new tests correctly `skip` under Docker root, which bypasses the permission bits they need) | `99 passed` under 3.14.3; `97 passed, 2 skipped` under 2.7.18 (skips explained, not silent); flake8 exit 0 both sides |
+
+| 2026-10-22 | 5504259 | py2scan | 2.7->3.14 | docs | Committed this file. Owner resolved the commit-vs-no-commit-docs question via a CLAUDE.md edit naming this repo's MIGRATION.md/README.md as an explicit exception (2026-10-22, AutoSteer Phase 2); confirmed by autosteer-architect that the answer comes from the owner, not from it | Committed |
+| 2026-10-22 | 2b0f53c | py2scan | 2.7->3.14 | docs | README.md was stale (said py2scan "runs on Python 2.7" and parses with 2.7's own ast/tokenize, true before the parso rewrite, false now; "do not upgrade" dependencies; listed 14 rules, not 17; no mention of --py3/--py3-interpreter). Corrected and committed under the same exception | Committed |
 
 ## Decisions
 None accepted yet. The security triage above proposes several
