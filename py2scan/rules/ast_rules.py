@@ -194,6 +194,58 @@ def check_bad_unicode_escape(path, tree, tokens, versions):
                           "Python 2", versions)
 
 
+def _enclosing_loop_body(node):
+    """Walk up from node; return the nearest for_stmt/while_stmt whose
+    own body suite (not an else-suite) contains node, without crossing
+    a funcdef boundary - None if there is none. A for/while's children
+    include a trailing (else, :, suite) when present; the loop's own
+    body is always its *first* suite child, so climbing through the
+    else-suite instead must not count as finding an enclosing loop
+    (confirmed on real 2.7.18: `for x in y: pass\\nelse:\\n    break` is
+    a SyntaxError, same as `break` with no loop at all)."""
+    current = node
+    parent = node.parent
+    while parent is not None:
+        if parent.type == "funcdef":
+            return None
+        if parent.type in ("for_stmt", "while_stmt"):
+            children = parent.children
+            body_idx = next(i for i, c in enumerate(children) if c.type == "suite")
+            if children.index(current) == body_idx:
+                return parent
+        current = parent
+        parent = parent.parent
+    return None
+
+
+def check_invalid_scope_use(path, tree, tokens, versions):
+    """return/yield outside any function, or break/continue outside any
+    loop (without crossing a function boundary on the way there):
+    nothing in parso's context-free grammar restricts where any of
+    these four may appear, but CPython's own compiler has a dedicated
+    semantic check rejecting every one of them, identical on every
+    CPython version there has ever been - 2.7 included (confirmed
+    directly on real 2.7.18 and real 3.14.9; the language rule itself,
+    not a 2-vs-3 difference). parso parses all four as clean, valid
+    Python 2.7 with nothing else here having any reason to object, so
+    R1's free-of-blockers guarantee would otherwise depend on whichever
+    host happens to be running py2scan - the live compile() backstop
+    only ever speaks for its own running version (R9)."""
+    for node in _nodes(tree, "return_stmt"):
+        if _enclosing_funcdef(node) is None:
+            yield Finding(path, node.start_pos[0], "PY3-INVALID-SCOPE", "blocker",
+                          "return outside function", versions)
+    for node in _nodes(tree, "yield_expr"):
+        if _enclosing_funcdef(node) is None:
+            yield Finding(path, node.start_pos[0], "PY3-INVALID-SCOPE", "blocker",
+                          "yield outside function", versions)
+    for leaf in _walk(tree):
+        if leaf.type == "keyword" and leaf.value in ("break", "continue"):
+            if _enclosing_loop_body(leaf) is None:
+                yield Finding(path, leaf.start_pos[0], "PY3-INVALID-SCOPE", "blocker",
+                              "%s outside loop" % leaf.value, versions)
+
+
 _RESERVED_SINCE_37 = frozenset(["async", "await"])
 
 
@@ -449,10 +501,26 @@ def _target_names(node):
 
 
 def _enclosing_funcdef(node):
+    """The nearest enclosing funcdef whose *body* (not its own parameter
+    list) contains node. A parameter's default-value expression
+    evaluates in the enclosing scope, once, at def-statement time -
+    before the function it initializes can even be called - so it is
+    not "inside" that function for shadowing purposes, even though it
+    is lexically nested under its funcdef node. Real repro: CPython
+    2.7's own json/encoder.py writes `def _make_iterencode(...,
+    basestring=basestring, ...):`, the classic "hand-optimized
+    bytecode" trick that gives a function a local fast-path to a
+    builtin by capturing it as a same-named default value. Without this
+    check, climbing from the default value's own "basestring" leaf
+    found _make_iterencode and then found "basestring" already local
+    there (as the *parameter* it initializes), wrongly suppressing a
+    real reference to the builtin."""
+    current = node
     p = node.parent
     while p is not None:
-        if p.type == "funcdef":
+        if p.type == "funcdef" and current is not p.children[2]:
             return p
+        current = p
         p = p.parent
     return None
 
@@ -681,12 +749,36 @@ def _is_keyword_argument_name(leaf):
             and getattr(parent.children[1], "value", None) == "=")
 
 
+def _is_import_source_name(leaf):
+    """True for the "unichr" in "from six import unichr as chr": the
+    half of an aliased import that names what to pull in, never a
+    lookup of anything in the current scope - it is a dotted path into
+    the module being imported from/as, exactly like an attribute name,
+    just without a literal "." trailer to structurally recognize (an
+    unaliased `import unichr` binds that name directly instead, via
+    _dotted_as_bound_leaves/target_leaves - a different shape, already
+    handled there). Real repro: pip's vendored html5lib does `from
+    pip._vendor.six import unichr as chr` - "unichr" is spelled exactly
+    like the Python 2 builtin but names six's own attribute, aliased
+    to a different local name ("chr") entirely."""
+    parent = leaf.parent
+    if parent is not None and parent.type in ("import_as_name", "dotted_as_name"):
+        return parent.children[0] is leaf
+    if parent is not None and parent.type == "dotted_name" and parent.children[0] is leaf:
+        grandparent = parent.parent
+        return (grandparent is not None and grandparent.type == "dotted_as_name"
+                and grandparent.children[0] is parent)
+    return False
+
+
 def _is_non_reference_use(leaf):
     """True for any name leaf whose position never reads whatever is
-    bound to that name - an attribute name or a call's keyword argument
-    name, both syntactically identical "name" leaves to a real reference
-    but never looked up anywhere."""
-    return _is_attribute_name(leaf) or _is_keyword_argument_name(leaf)
+    bound to that name - an attribute name, a call's keyword argument
+    name, or the source half of an aliased import, all syntactically
+    identical "name" leaves to a real reference but never looked up
+    anywhere."""
+    return (_is_attribute_name(leaf) or _is_keyword_argument_name(leaf)
+            or _is_import_source_name(leaf))
 
 
 def _resolve_shadowing_scopes(local_by_func, globals_by_func, module_level):
@@ -758,4 +850,4 @@ def check_keyword_binding(path, tree, tokens, versions):
 AST_RULES = [check_print, check_exec, check_backtick, check_raise_comma,
              check_dict_iter, check_builtin, check_stdlib, check_metaclass,
              check_tuple_param, check_async_reserved, check_keyword_binding,
-             check_ur_string, check_bad_unicode_escape]
+             check_ur_string, check_bad_unicode_escape, check_invalid_scope_use]

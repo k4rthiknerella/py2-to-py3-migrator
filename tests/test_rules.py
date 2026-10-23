@@ -9,6 +9,7 @@ from py2scan.rules.ast_rules import (
     check_builtin,
     check_dict_iter,
     check_exec,
+    check_invalid_scope_use,
     check_keyword_binding,
     check_metaclass,
     check_print,
@@ -225,6 +226,100 @@ def test_builtin_shadowed_by_from_import_as_is_not_found():
         "    return isinstance(body, (basestring, bytes))\n"
     )
     assert rules(check_builtin, src) == []
+
+
+def test_builtin_as_a_params_own_default_value_is_still_found():
+    # Round-3 independent check, item 3. Real repro: CPython 2.7's own
+    # json/encoder.py writes `def _make_iterencode(..., basestring=
+    # basestring, ...):`, the "hand-optimized bytecode" trick of giving
+    # a function a local fast-path to a builtin via a same-named
+    # default value. The default value evaluates in the *enclosing*
+    # scope, once, at def-statement time - it is not a reference inside
+    # the function it initializes, even though _enclosing_funcdef used
+    # to say it was (finding "basestring" already "local" there, as the
+    # parameter itself).
+    src = "def f(basestring=basestring):\n    pass\n"
+    assert rules(check_builtin, src) == [(1, "PY3-BUILTIN")]
+
+
+def test_builtin_as_a_params_default_value_still_excludes_the_param_itself():
+    src = "def f(x=unicode):\n    pass\n"
+    assert rules(check_builtin, src) == [(1, "PY3-BUILTIN")]
+
+
+def test_builtin_named_import_source_aliased_away_is_not_found():
+    # Round-3 independent check, item 3. Real repro: pip's vendored
+    # html5lib does `from pip._vendor.six import unichr as chr` -
+    # "unichr" is spelled exactly like the Python 2 builtin but names
+    # six's own attribute, aliased to a different local name ("chr")
+    # entirely; it is never looked up in this module's own scope at all.
+    src = "from six import unichr as chr\nx = chr(65)\n"
+    assert rules(check_builtin, src) == []
+
+
+def test_builtin_named_module_aliased_away_is_not_found():
+    src = "import unichr as u\n"
+    assert rules(check_builtin, src) == []
+
+
+def test_return_outside_function_is_found():
+    assert rules(check_invalid_scope_use, "return 1\n") == [(1, "PY3-INVALID-SCOPE")]
+
+
+def test_yield_outside_function_is_found():
+    assert rules(check_invalid_scope_use, "yield 1\n") == [(1, "PY3-INVALID-SCOPE")]
+
+
+def test_break_outside_loop_is_found():
+    assert rules(check_invalid_scope_use, "break\n") == [(1, "PY3-INVALID-SCOPE")]
+
+
+def test_continue_outside_loop_is_found():
+    assert rules(check_invalid_scope_use, "continue\n") == [(1, "PY3-INVALID-SCOPE")]
+
+
+def test_return_inside_function_is_not_found():
+    assert rules(check_invalid_scope_use, "def f():\n    return 1\n") == []
+
+
+def test_yield_inside_function_is_not_found():
+    assert rules(check_invalid_scope_use, "def f():\n    yield 1\n") == []
+
+
+def test_break_inside_loop_is_not_found():
+    assert rules(check_invalid_scope_use, "for x in y:\n    break\n") == []
+
+
+def test_continue_inside_while_loop_is_not_found():
+    assert rules(check_invalid_scope_use, "while True:\n    continue\n") == []
+
+
+def test_return_inside_method_is_not_found():
+    src = "class C(object):\n    def f(self):\n        return 1\n"
+    assert rules(check_invalid_scope_use, src) == []
+
+
+def test_break_inside_nested_function_within_a_loop_is_still_found():
+    # Real repro (verified on real 2.7.18: SyntaxError): a nested def's
+    # own body is a separate scope for break/continue purposes too - it
+    # cannot break a loop it merely happens to be lexically written
+    # inside, since the def could be called long after that loop ends.
+    src = "for x in y:\n    def f():\n        break\n"
+    assert rules(check_invalid_scope_use, src) == [(3, "PY3-INVALID-SCOPE")]
+
+
+def test_break_inside_a_loops_else_clause_is_still_found():
+    # Real repro (verified on real 2.7.18: SyntaxError): a for/while's
+    # else-suite runs only after the loop completes normally, never
+    # during iteration, so break/continue there do not refer to that
+    # loop either.
+    src = "for x in y:\n    pass\nelse:\n    break\n"
+    assert rules(check_invalid_scope_use, src) == [(4, "PY3-INVALID-SCOPE")]
+
+
+def test_return_inside_a_loop_inside_a_function_is_not_found():
+    src = "def f():\n    for x in y:\n        break\n    return 1\n"
+    assert rules(check_invalid_scope_use, src) == []
 
 
 def test_stdlib_import_is_found():
