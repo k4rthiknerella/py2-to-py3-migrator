@@ -51,11 +51,21 @@ derivation recorded. Not started; folded into the same R6/R7/R8 matrix work.
 ## Units
 | Unit | Owner | Runtime today | Effective target | Step | Level | Blockers (auto / manual) | Size | Next |
 |---|---|---|---|---|---|---|---|---|
-| py2scan | Karthik Nerella | 2.7.18 | 3.14 | 2.7.18 → 3.14 | L2 | 0 auto / 0 manual | S | `verify py2scan` |
+| py2scan | Karthik Nerella | 2.7.18 | 3.14 | 2.7.18 → 3.14 | L3 | 0 auto / 0 manual | S | `verify py2scan` |
 
-L2 is proved by `.py-migrate/compile_check.py`, committed, run on both sides —
-see Evidence. No consumers import py2scan as a library (it is a CLI-only
-unit), so there is no import-graph wave ordering to apply.
+L2 is proved by `.py-migrate/compile_check.py`, committed, run on both sides
+— see Evidence. L3 (this session): dependencies resolve on both sides (see
+Dependencies — every pin verified to actually install and import, not just
+believed to resolve), no stored data for this CLI tool, runtime surfaces
+have a plan (see Runtime surfaces), and the 0/0 blocker count above is
+itself the "no open blockers" proof. No consumers import py2scan as a
+library (it is a CLI-only unit), so there is no import-graph wave ordering
+to apply. Not yet bumped to L4: the full suite has passed on both real
+interpreters after every commit this session (see Evidence, repeatedly),
+which is L4's actual bar, but that's informal/incidental evidence
+accumulated along the way, not a deliberate `verify` pass — leaving the
+explicit `verify py2scan` step to actually declare it, rather than
+inferring the level quietly.
 
 ## Path
 One step: 2.7.18 → 3.14, straddling. There is no bridge release to find: the
