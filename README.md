@@ -41,12 +41,13 @@ The exit code is 2 if anything under the scanned path could hold Python
 source but could not be read (nothing is ever dropped silently -- each
 is listed with a reason), 1 if any blocker finding remains, 0 otherwise.
 
-Status: 18 rules -- PY3-PRINT, PY3-EXEC-STMT, PY3-BACKTICK, PY3-NE-OP,
+Status: 20 rules -- PY3-PRINT, PY3-EXEC-STMT, PY3-BACKTICK, PY3-NE-OP,
 PY3-EXCEPT-COMMA, PY3-RAISE-COMMA, PY3-OCTAL, PY3-LONG-SUFFIX,
 PY3-DICT-ITER, PY3-BUILTIN, PY3-STDLIB, PY3-TUPLE-PARAM,
-PY3-ASYNC-RESERVED, PY3-KEYWORD-BINDING, PY3-UR-STRING, PY3-DIVISION
-(warning), PY3-METACLASS (warning), PY3-PARSE (a live-compile backstop,
-not a static rule -- see `--py3-interpreter` above).
+PY3-ASYNC-RESERVED, PY3-KEYWORD-BINDING, PY3-UR-STRING,
+PY3-BAD-ESCAPE, PY3-DEEP-NESTING, PY3-DIVISION (warning), PY3-METACLASS
+(warning), PY3-PARSE (a live-compile backstop, not a static rule -- see
+`--py3-interpreter` above).
 
 See MIGRATION.md for py2scan's own migration from Python 2.7 to 3.14 --
 a separate question from the Python 3 versions it judges scanned code
