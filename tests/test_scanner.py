@@ -115,3 +115,30 @@ def test_unreadable_file_is_reported_not_dropped():
     finally:
         os.chmod(bad, 0o644)
         shutil.rmtree(root)
+
+
+def test_non_utf8_filename_does_not_crash_the_scan():
+    # Real repro: a file literally named with a raw non-UTF-8 byte
+    # (independent check's hostile/non_utf8_name case). Scanning it must
+    # never raise - only json.dumps()/display_path() at the output
+    # boundary need to know about this; discover()/scan_file() work with
+    # the exact original bytes throughout, matching the real filesystem.
+    root = tempfile.mkdtemp()
+    # Python 2's open() takes the raw bytes directly (str is bytes there);
+    # Python 3's os layer reconstructs the same raw byte from a lone
+    # surrogate codepoint via surrogateescape when the OS call is made.
+    bad_name = b"caf\xe9.py" if sys.version_info[0] < 3 else u"caf\udce9.py"
+    try:
+        with open(os.path.join(root, "ok.py"), "wb") as f:
+            f.write(b"x = 1\n")
+        try:
+            with open(os.path.join(root, bad_name), "wb") as f:
+                f.write(b"print x\n")
+        except (OSError, ValueError, UnicodeDecodeError):
+            pytest.skip("this filesystem rejects non-UTF-8 filenames")
+        result = scan(root, jobs=1)
+        assert len(result.files) == 2
+        assert len(result.findings) == 1
+        assert result.findings[0].rule == "PY3-PRINT"
+    finally:
+        shutil.rmtree(root)

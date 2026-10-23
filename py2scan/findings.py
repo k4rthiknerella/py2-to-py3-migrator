@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from py2scan.encoding import display_path
 
 
 class Finding(object):
@@ -20,6 +21,6 @@ class Finding(object):
         return (self.file, self.line, self.rule)
 
     def to_dict(self):
-        return {"file": self.file, "line": self.line, "rule": self.rule,
+        return {"file": display_path(self.file), "line": self.line, "rule": self.rule,
                 "severity": self.severity, "message": self.message,
                 "versions": ["%d.%d" % v for v in self.versions]}

@@ -5,6 +5,7 @@ import sys
 import click
 
 from py2scan.config import load_config
+from py2scan.encoding import display_path
 from py2scan.report import render_html, to_json
 from py2scan.scanner import scan
 from py2scan.versions import ALL_VERSION_STRS, parse_versions
@@ -71,9 +72,9 @@ def scan_cmd(path, fmt, config_path, jobs, html_path, py3_versions, extra_interp
         click.echo(json.dumps(to_json(result, findings, versions), sort_keys=True))
     else:
         for f in findings:
-            click.echo(u"%s:%d: %s %s" % (f.file, f.line, f.rule, f.message))
+            click.echo(u"%s:%d: %s %s" % (display_path(f.file), f.line, f.rule, f.message))
         for rel, reason in result.unreadable:
-            click.echo(u"%s: unreadable: %s" % (rel, reason))
+            click.echo(u"%s: unreadable: %s" % (display_path(rel), reason))
         click.echo(u"%d files, %d findings" % (len(result.files), len(findings)))
 
     if result.incomplete:

@@ -4,7 +4,7 @@ from collections import Counter, OrderedDict
 
 from jinja2 import Environment
 
-from py2scan.encoding import decode_source_lines
+from py2scan.encoding import decode_source_lines, display_path
 from py2scan.versions import version_str
 
 # Bumped whenever the JSON shape changes, so consumers can detect a field
@@ -52,10 +52,11 @@ def to_json(scan_result, findings, versions):
         "versions_judged": [version_str(v) for v in versions],
         "files": len(scan_result.files),
         "readiness": readiness_by_version,
-        "file_readiness": file_readiness,
+        "file_readiness": {display_path(rel): ready
+                           for rel, ready in file_readiness.items()},
         "rules": rules,
         "findings": [f.to_dict() for f in findings],
-        "unreadable": [{"path": path, "reason": reason}
+        "unreadable": [{"path": display_path(path), "reason": reason}
                        for path, reason in scan_result.unreadable],
     }
 
@@ -123,7 +124,7 @@ def render_html(root, files, findings, versions):
             rows.append({"line": f.line, "rule": f.rule, "severity": f.severity,
                          "message": f.message, "source": source,
                          "versions": [version_str(v) for v in f.versions]})
-        findings_by_file.append((rel, rows))
+        findings_by_file.append((display_path(rel), rows))
 
     env = Environment(autoescape=True)
     template = env.from_string(_HTML_TEMPLATE)
