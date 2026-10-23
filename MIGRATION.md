@@ -633,6 +633,59 @@ Inputs, each verified against both real interpreters (2.7.18, 3.14.7) via
   Python 3's grammar rejects" framing in the prior version of this entry
   was also wrong for this specific rule, for the same reason.
 
+## Flip preparation (prepared, not executed — see commit `09a45fd` for the
+one piece of infra this added; nothing below was merged, shipped, or
+changed outside this branch)
+
+py2scan is a CLI tool, not a running service — there is no fleet, no
+canary host pool, and no deploy manifest to speak of, so this section
+adapts `flip`'s checklist (runtime pins, canary, rollback) to what that
+actually means for a `pip install`-able package rather than forcing the
+server-migration framing where it doesn't fit.
+
+**What would change at flip** (drafted here, not applied — these are the
+owner's edits to make and merge):
+- `setup.py:python_requires` currently reads
+  `">=2.7,!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*,!=3.4.*,!=3.5.*"` — this already
+  allows 2.7 *and* 3.6+ simultaneously (straddle), not 3-only. At flip this
+  narrows to `">=3.6"` and drops 2.7 and the `!=3.x.*` exclusions
+  entirely, since R6–R10 already fixed 3.6 as the lowest judged version.
+  (Corrected a stale Runtime surfaces table entry this session, which had
+  claimed this field was still `"==2.7.*"` — it was already widened, in
+  commit `5b75c6e`, before this session started; the table just hadn't
+  caught up. Not a flip-prep change itself, a documentation fix.)
+- `requirements.txt`/`setup.py`'s `install_requires`: drop the
+  `python_version<"3"` pins (`PyYAML==5.4.1`, `futures==3.3.0`) and their
+  markers, keeping only the `>=3` side of each already-present split.
+- `Dockerfile.test`: swaps role from primary to legacy/compat-check, or
+  retires outright at `cleanup`, once no supported step still needs 2.7.18
+  — not decided here; that is a `cleanup`-stage call, past flip.
+- `CLAUDE.md` (project, not committed): "Runtime is Python 2.7.18 only" —
+  owner-authored prose, explicitly the owner's edit per the existing
+  Runtime surfaces table row, not touched by this prep.
+
+**Canary, adapted for a CLI tool (no server fleet to stage against):**
+parity-check real scan roots, not synthetic ones — run both the pinned
+2.7.18 install and the 3.14 install of the *same* py2scan commit against
+several real external codebases (not just this repo's own tiny fixture
+set) and diff the JSON output. Expect exactly the one known, already
+-recorded divergence (item 2b: `PY3-PRINT`/`PY3-EXEC-STMT`/
+`PY3-BACKTICK`/`PY3-RAISE-COMMA`/`PY3-NE-OP`/`PY3-OCTAL`/
+`PY3-LONG-SUFFIX` findings on 2.7.18 report as a single `PY3-PARSE` on
+3.14, since Python 3's own `ast.parse` can't produce the specific node
+types those rules look for) — any *other* diff found during this check is
+a new, real regression, not a known/accepted one, and blocks flip until
+explained.
+
+**Rollback:** a `pip install py2scan==<last-2.7-compatible-version>` (or
+the matching git tag) reinstalls the pre-flip package on a 2.7
+environment; nothing server-side to roll back since nothing is deployed.
+
+**Mixed-fleet data:** N/A — py2scan has no stored data (see Stored data,
+below) and no shared state between installs; each user's install is
+independent, so there is no mixed-version-fleet consistency concern the
+way a running service would have.
+
 ## Dependencies
 | Package | Pinned | Needed for step | Supports it? | Source |
 |---|---|---|---|---|
