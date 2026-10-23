@@ -170,7 +170,7 @@ Waves: none — one unit, no import graph.
   test for. Also doesn't handle 2.7's tuple-parameter unpacking
   (`def f((a, b)): ...`) — rare, Python-2-only syntax.
 
-**Resolved, commit `pending`:**
+**Resolved, commit `70d7bd5`:**
 - R5: `py2scan/scanner.py` walked the tree with `os.path.isdir`/`isfile`,
   which silently swallow `OSError` and return `False` — a permission-denied
   directory or file simply vanished from the file list with no trace, and
@@ -338,8 +338,8 @@ any other process (no pickle, cache, queue, or database).
 | 2026-10-22 | 8f48071 | py2scan | 2.7.18→3.14 | (flake8, not a level) | `flake8 --max-complexity 10 py2scan tests` under both real interpreters, after R2 and T12 fixes | 0 violations of any kind, both interpreters |
 | 2026-10-22 | 054d2b2 | py2scan | 2.7.18→3.14 | (R3) | full suite on both real interpreters after implementing R3's scope-chain rewrite of `check_builtin_use` (row added late — missed when the commit landed) | `97 passed` on 2.7.18; `92 passed, 5 skipped` on 3.14.7 |
 | 2026-10-22 | 054d2b2 | py2scan | 2.7.18→3.14 | (flake8, not a level) | `flake8 --max-complexity 10 py2scan tests` under both real interpreters, after R3 (including the closures-vs-top-level-functions complexity fix) | 0 violations of any kind, both interpreters |
-| 2026-10-22 | pending | py2scan | 2.7.18→3.14 | (R5) | full suite on both real interpreters after implementing R5 | `104 passed, 2 skipped` on 2.7.18 (Docker, root — 2 root-dependent tests skipped); `101 passed, 5 skipped` on 3.14.7 (non-root venv — those 2 ran and passed; same 5 `PY2_ONLY_SYNTAX` skips as before) |
-| 2026-10-22 | pending | py2scan | 2.7.18→3.14 | (flake8, not a level) | `flake8 --max-complexity 10 py2scan tests` under both real interpreters, after R5 | 0 violations of any kind, both interpreters |
+| 2026-10-22 | 70d7bd5 | py2scan | 2.7.18→3.14 | (R5) | full suite on both real interpreters after implementing R5 | `104 passed, 2 skipped` on 2.7.18 (Docker, root — 2 root-dependent tests skipped); `101 passed, 5 skipped` on 3.14.7 (non-root venv — those 2 ran and passed; same 5 `PY2_ONLY_SYNTAX` skips as before) |
+| 2026-10-22 | 70d7bd5 | py2scan | 2.7.18→3.14 | (flake8, not a level) | `flake8 --max-complexity 10 py2scan tests` under both real interpreters, after R5 | 0 violations of any kind, both interpreters |
 
 ## Decisions
 - 2026-10-22, owner: `.md`-commit exception for `MIGRATION.md` and
