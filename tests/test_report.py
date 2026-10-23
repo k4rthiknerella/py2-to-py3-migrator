@@ -8,6 +8,14 @@ from py2scan.findings import Finding
 from py2scan.report import render_html, summarize
 
 
+def test_summary_carries_a_schema_version():
+    # Spec item 3: the JSON output carries a schema version, so a
+    # consumer can tell readiness-as-dict (R6) apart from any future
+    # breaking shape change without guessing from the keys present.
+    summary = summarize([], [])
+    assert summary["schema_version"] == 1
+
+
 def test_no_files_is_fully_ready():
     # R6: readiness is per judged Python 3 version, not one scalar - a
     # file can be ready for 3.9 while still blocked on 3.12.

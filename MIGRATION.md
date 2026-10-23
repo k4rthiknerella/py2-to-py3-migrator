@@ -578,6 +578,149 @@ just confirmed-clean coverage:
   predicates py2scan actually calls; `token.h` C header removed (3.12) —
   C API only, py2scan is pure Python.
 
+**Resolved, commit `91d8bd1` (retroactive write-up — added after the
+commit itself, closing a documentation gap AutoSteer's Units-level
+Evidence check would otherwise have caught the same way it caught the
+L2 to L3 gap above): two more item-3 crashes, found by testing every
+input item 3 lists against the real scanner, not just the ones the
+`cc12b90` sweep above happened to cover.**
+
+- Embedded NUL byte: Python 2.7's `compile()` raises `TypeError`
+  (confirmed empirically via a standalone probe — not `SyntaxError`),
+  uncaught by the original `except SyntaxError` clause in
+  `scanner.py:scan_file`, crashing the entire scan via
+  `ProcessPoolExecutor`, not just the one file. Python 3.14 already
+  raises `SyntaxError` for the same input.
+- Deeply nested expression (3000 nested parens, tested directly):
+  Python 2.7's C parser raises `MemoryError` ("s_push: parser stack
+  overflow", printed to stderr by the C parser itself), same
+  uncaught-crash shape. Python 3.14's PEG parser already raises
+  `SyntaxError` ("too many nested parentheses").
+- Invalid coding declaration naming a codec that doesn't exist:
+  `lib2to3.pgen2.tokenize.detect_encoding` (used only by
+  `encoding.py:read_lines`, for HTML rendering) raises `SyntaxError:
+  unknown encoding: <name>` — confirmed directly against the real
+  function on 2.7.18. JSON/text output already handled this (via
+  `scan_file`'s own `ast.parse`), but HTML output crashed, since
+  `render_html`'s `source_line()` calls `read_lines` directly with no
+  exception handling of its own.
+
+Fixed by broadening `scan_file`'s except clause to `(SyntaxError,
+TypeError, ValueError, MemoryError, RuntimeError)` — `RuntimeError`
+covers `RecursionError` (a subclass added in Python 3.5) without
+referencing a name that doesn't exist on Python 2 — and by wrapping
+`read_lines`'s `detect_encoding` call in `try`/`except SyntaxError`,
+falling back to `utf-8`.
+
+Checked and confirmed already correct, no fix needed, for the rest of
+item 3's list: symlink loops (bounded by the OS's own `ELOOP`, already
+caught by `_walk_entries`'s per-entry `OSError` handler — R5), byte-order
+marks, CRLF line endings, empty files, and a directory literally named
+`*.py` (`_walk_entries` checks `stat.S_ISDIR` before the `.py` extension
+check, so it is always recursed into, never mistaken for a file). These
+five were verified working this session via live runs against real
+interpreters, but manual verification during a session is not itself a
+receipt; dedicated committed tests for exactly these five follow in the
+next entry.
+
+3 new tests in this commit: `tests/test_scanner.py:
+test_embedded_nul_byte_is_a_parse_blocker_not_a_crash`,
+`test_deeply_nested_expression_is_a_parse_blocker_not_a_crash`;
+`tests/test_report.py:
+test_read_lines_falls_back_to_utf8_for_an_unknown_codec`. (The commit
+message at the time said "5 new tests" — that count was wrong, corrected
+here to the actual 3, confirmed via `git show 91d8bd1 -- tests/ | grep
+"^+def test_"`.) Full suite at the time: 120 passed, 2 skipped (2.7.18);
+115 passed, 7 skipped (3.14.7, 3.14.9). flake8 clean on 2.7.18 and
+3.14.7.
+
+**Resolved, commit `pending`: item 3's remaining edge-case receipts, the
+JSON schema version, item 2c's never-executes guarantee, and item 5's
+two-file claim.** Triggered by autosteer-architect resending the
+verbatim task text and rulings after an earlier handoff turned out to be
+premature — several "What done means" items had no committed receipt at
+all. Closed four of them:
+
+- **Item 3, edge-case test receipts.** The entry above's five
+  "checked and confirmed already correct" cases (symlink loop, BOM,
+  CRLF, empty file, directory named `*.py`) were only manually verified
+  during a session, never committed as tests — not a receipt under this
+  task's own rule ("an item without a receipt is not done"). Added 5
+  tests to `tests/test_scanner.py`:
+  `test_symlink_loop_is_a_problem_not_a_crash` (a self-referencing
+  symlink inside its own directory; asserts exactly one problem whose
+  reason contains `os.strerror(errno.ELOOP)`, written platform-tolerantly
+  since the exact errno/text differs between Linux and macOS),
+  `test_byte_order_mark_is_scanned_cleanly`,
+  `test_crlf_line_endings_are_scanned_cleanly`,
+  `test_empty_file_is_scanned_cleanly`,
+  `test_directory_named_dot_py_is_recursed_into_not_scanned_as_a_file`.
+
+- **Item 3, JSON schema version.** "The JSON output carries a schema
+  version" had zero implementation (`grep -n "schema" py2scan/*.py
+  tests/*.py` returned nothing before this commit). Added `report.py:
+  SCHEMA_VERSION = 1`, included as `summarize()`'s first returned key,
+  `"schema_version"`. Checked every existing call site of `summarize()`'s
+  result (`tests/test_report.py`, `tests/test_cli.py`) for whole-dict
+  equality assertions this new key could break — none exist; every
+  assertion accesses a specific key. New test: `tests/test_report.py:
+  test_summary_carries_a_schema_version`.
+
+- **Item 2c: "the scanner never imports or executes the code it
+  scans."** Previously true by architecture (`scanner.py` only calls
+  `ast.parse`/`tokenize` — confirmed via grepping for `exec`, `eval(`,
+  `__import__`, `importlib`, and `imp.` across `py2scan/*.py`: the only
+  matches are `exec` inside rule names/strings that *detect* the `exec`
+  statement in scanned code, never execute it) but never affirmatively
+  tested. New test: `tests/test_scanner.py:
+  test_scanner_never_executes_the_code_it_scans` — writes a file whose
+  only statement is `open(<sentinel path>, 'w').close()`, which would
+  create the sentinel file the instant the module were imported or
+  exec'd, then asserts the sentinel is never created, through both
+  `scan_file` directly and the full `scan()` pipeline (which runs each
+  file in a separate worker process via `ProcessPoolExecutor` — a naive
+  implementation that tried to `import` the scanned file by path in a
+  worker would have executed it there).
+
+- **Item 5: "adding a new rule touches at most two files."** True for
+  the code path, with one caveat, not just asserted. `scanner.py`
+  dispatches generically over `rules.AST_RULES`,
+  `VERSION_AWARE_AST_RULES`, and `TOKEN_RULES` (confirmed: `grep -n
+  "check_" py2scan/scanner.py` has zero hits — it never names a rule
+  function), so a new rule needs only its function plus a one-line
+  append to the matching list — both in `py2scan/rules.py` — and a test
+  in `tests/test_rules.py`: two files. New test `tests/test_rules.py:
+  test_adding_a_rule_touches_at_most_two_files` proves the structural
+  half by appending a throwaway rule straight to `rules.AST_RULES` at
+  runtime and confirming `scan_file` picks it up with zero change to
+  `scanner.py`. **Caveat, reported rather than hidden:** `README.md` also
+  documents every rule ID in a user-facing table (`grep -n "PY3-"
+  README.md`); keeping that table current is a third file, for
+  documentation only — the rule is fully functional and tested without
+  it. No commit in this repository's history adds a single brand-new rule
+  in isolation to check this claim against (the original 14 rules landed
+  together in commit `0e39731`; every rule-touching commit since changes
+  an existing rule's logic, not its registration), so this item's
+  receipt is the structural test above, not a historical example commit.
+
+8 new tests in this commit (5 + 1 + 1 + 1 above). One flake8 fix needed
+during this work and worth recording as its own small lesson: the first
+version of the item-5 test reused the loop variable name `f` for both the
+file handle (`with open(...) as f:`) and the list-comprehension result
+(`[f.rule for f in findings]`) in the same function — flake8 caught it as
+`F812 list comprehension redefines 'f'`, and only on **2.7.18**, not on
+3.14.7 or 3.14.9, because Python 2 list comprehensions leak their loop
+variable into the enclosing scope while Python 3's do not. This is
+exactly the kind of interpreter-version-dependent scoping difference
+this whole migration is about — caught by testing the new test itself
+against both interpreters, not assumed safe. Fixed by renaming the
+comprehension variable to `finding`.
+
+Full suite after every fix in this entry: 128 passed, 2 skipped
+(2.7.18); 123 passed, 7 skipped (3.14.7); 123 passed, 7 skipped (3.14.9,
+Docker `py2scan-test314`, matching CI). flake8 `--max-complexity 10`
+clean on all three.
+
 **Open defect against item 2b (not an accepted divergence — flagged by
 AutoSteer trigger T12, corrected 2026-10-22; claims re-verified after T10
 flagged two of them as receipt-free, corrected again same day):** R1
@@ -776,6 +919,12 @@ any other process (no pickle, cache, queue, or database).
 | 2026-10-22 | 0f40071 | py2scan | 2.7.18→3.14 | L4 (`verify`) | same command inside `python:3.14-slim` (3.14.9, matching CI) | `112 passed, 7 skipped` |
 | 2026-10-22 | 0f40071 | py2scan | 2.7.18→3.14 | L4 (`verify`, compile_check) | `.py-migrate/compile_check.py` against every tracked file (`git ls-files`), on 2.7.18 (Docker) and 3.14.7 | `checked 17, failed 0, unreadable 0` on both |
 | 2026-10-22 | 0f40071 | py2scan | 2.7.18→3.14 | L4 (`verify`, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker, ad hoc `flake8<4`) and 3.14.7 | 0 violations, both interpreters |
+| 2026-10-22 | n/a (research, no code change) | py2scan | (item 3, NUL byte / deep nesting / bad codec, root cause) | an embedded NUL byte and a 3000-deep nested-paren expression fed directly to `ast.parse` on real 2.7.18 (Docker) and 3.14.9 (Docker); a coding declaration naming a nonexistent codec fed directly to `lib2to3.pgen2.tokenize.detect_encoding` on real 2.7.18 | 2.7.18 raises `TypeError` (NUL byte) and `MemoryError` (deep nesting), both uncaught by the original `except SyntaxError`; 3.14.9 raises plain `SyntaxError` for both; `detect_encoding` raises `SyntaxError: unknown encoding: bogus-nonexistent-codec`, uncaught in `encoding.py:read_lines`, crashing HTML rendering only |
+| 2026-10-22 | 91d8bd1 | py2scan | (item 3, NUL byte / deep nesting / bad codec, fix) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), 3.14.9 (Docker `py2scan-test314`) | `120 passed, 2 skipped` on 2.7.18; `115 passed, 7 skipped` on 3.14.7 and 3.14.9 |
+| 2026-10-22 | 91d8bd1 | py2scan | (item 3, NUL byte / deep nesting / bad codec, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker, ad hoc `flake8<4`) and 3.14.7 | 0 violations, both interpreters |
+| 2026-10-22 | n/a (research, no code change) | py2scan | (item 3, symlink loop / BOM / CRLF / empty file / `*.py` directory) | a self-referencing symlink, a BOM-prefixed file, a CRLF file, a 0-byte file, and a directory literally named `weird.py`, each scanned via real `scan`/`scan_file` calls on 2.7.18 | all 5 already handled correctly with no crash and no code change — confirms the manual verification claimed in the `91d8bd1` writeup above, closing the gap before committing dedicated tests for each |
+| 2026-10-22 | pending | py2scan | (item 3 edge-case tests, item 3 schema version, item 2c, item 5) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), 3.14.9 (Docker `py2scan-test314`) | `128 passed, 2 skipped` on 2.7.18; `123 passed, 7 skipped` on 3.14.7 and 3.14.9 |
+| 2026-10-22 | pending | py2scan | (item 3 edge-case tests, item 3 schema version, item 2c, item 5, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker, ad hoc `flake8<4`), 3.14.7 (Homebrew venv), and 3.14.9 (Docker `py2scan-test314`, ad hoc `flake8`) | first pass: 1 violation, 2.7.18 only (`F812 list comprehension redefines 'f'` in the new item-5 test — a real Python-2-only scoping difference, not a false positive); 0 violations on 3.14.7/3.14.9; after renaming the comprehension variable, 0 violations on all three |
 
 ## Decisions
 - 2026-10-22, owner: `.md`-commit exception for `MIGRATION.md` and

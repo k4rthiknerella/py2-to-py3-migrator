@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import errno
 import os
 import shutil
 import sys
@@ -141,6 +142,32 @@ def test_a_broken_file_does_not_affect_scanning_of_others():
         by_file.setdefault(f.file, []).append(f.rule)
     assert by_file["broken.py"] == ["PY3-PARSE"]
     assert by_file["ok.py"] == ["PY3-BUILTIN"]
+
+
+def test_scanner_never_executes_the_code_it_scans():
+    # Item 2c: the scanner only ever ast.parse's/tokenizes raw bytes - it
+    # must never import or execute a scanned file. A module-level side
+    # effect (creating a sentinel file) would run the instant the module
+    # were imported or exec'd; it must never run here, through either
+    # scan_file directly or the full scan() pipeline (which runs each
+    # file in a separate worker process via ProcessPoolExecutor).
+    root = tempfile.mkdtemp()
+    try:
+        sentinel = os.path.join(root, "sentinel")
+        with open(os.path.join(root, "m.py"), "wb") as f:
+            f.write(("open(%r, 'w').close()\n" % sentinel)
+                    .encode("ascii"))
+        findings, problem = scan_file(root, "m.py")
+        assert problem is None
+        assert findings == []
+        assert not os.path.exists(sentinel)
+
+        files, findings, problems = scan(root, jobs=1)
+        assert files == ["m.py"]
+        assert problems == []
+        assert not os.path.exists(sentinel)
+    finally:
+        shutil.rmtree(root)
 
 
 def test_config_is_applied_end_to_end():
@@ -328,6 +355,84 @@ def test_embedded_nul_byte_is_a_parse_blocker_not_a_crash():
     assert len(findings) == 1
     assert findings[0].rule == "PY3-PARSE"
     assert findings[0].severity == "blocker"
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"),
+                    reason="platform has no symlink support")
+def test_symlink_loop_is_a_problem_not_a_crash():
+    # Item 3: a symlink that resolves back into its own ancestor must not
+    # hang the scan. os.stat's own ELOOP bound (confirmed empirically to
+    # return promptly, not hang) is already caught by _walk_entries's
+    # per-entry OSError branch (R5).
+    root = tempfile.mkdtemp()
+    try:
+        loopdir = os.path.join(root, "loopdir")
+        os.mkdir(loopdir)
+        os.symlink(loopdir, os.path.join(loopdir, "selfloop"))
+        with open(os.path.join(root, "ok.py"), "wb") as f:
+            f.write(b"x = 1\n")
+        files, findings, problems = scan(root, jobs=1)
+    finally:
+        shutil.rmtree(root)
+    assert files == ["ok.py"]
+    assert len(problems) == 1
+    assert problems[0][0].endswith("selfloop")
+    assert os.strerror(errno.ELOOP) in problems[0][1]
+
+
+def test_byte_order_mark_is_scanned_cleanly():
+    # Item 3: a leading UTF-8 byte-order mark must not break parsing.
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "bom.py"), "wb") as f:
+            f.write(b"\xef\xbb\xbfx = 1\n")
+        findings, problem = scan_file(root, "bom.py")
+    finally:
+        shutil.rmtree(root)
+    assert problem is None
+    assert findings == []
+
+
+def test_crlf_line_endings_are_scanned_cleanly():
+    # Item 3: CRLF line endings (common on a working copy checked out with
+    # core.autocrlf) must not break parsing.
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "crlf.py"), "wb") as f:
+            f.write(b"x = 1\r\ny = 2\r\n")
+        findings, problem = scan_file(root, "crlf.py")
+    finally:
+        shutil.rmtree(root)
+    assert problem is None
+    assert findings == []
+
+
+def test_empty_file_is_scanned_cleanly():
+    # Item 3: a 0-byte .py file must not break parsing.
+    root = tempfile.mkdtemp()
+    try:
+        open(os.path.join(root, "empty.py"), "wb").close()
+        findings, problem = scan_file(root, "empty.py")
+    finally:
+        shutil.rmtree(root)
+    assert problem is None
+    assert findings == []
+
+
+def test_directory_named_dot_py_is_recursed_into_not_scanned_as_a_file():
+    # Item 3: _walk_entries checks stat.S_ISDIR before the .py extension
+    # check, so a directory literally named *.py is never mistaken for a
+    # file and always recursed into.
+    root = tempfile.mkdtemp()
+    try:
+        os.mkdir(os.path.join(root, "weird.py"))
+        with open(os.path.join(root, "weird.py", "inner.py"), "wb") as f:
+            f.write(b"x = 1\n")
+        files, findings, problems = scan(root, jobs=1)
+    finally:
+        shutil.rmtree(root)
+    assert files == ["weird.py/inner.py"]
+    assert problems == []
 
 
 def test_deeply_nested_expression_is_a_parse_blocker_not_a_crash():

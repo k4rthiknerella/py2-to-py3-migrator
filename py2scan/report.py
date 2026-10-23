@@ -12,6 +12,8 @@ from py2scan.rules import ALL_TARGET_VERSIONS
 
 _ENV = jinja2.Environment(autoescape=True)
 
+SCHEMA_VERSION = 1
+
 _TEMPLATE = u"""<!DOCTYPE html>
 <html>
 <head>
@@ -102,6 +104,7 @@ def summarize(files, findings, problems=None, judged_versions=None):
     rule_counts = collections.Counter(f.rule for f in findings)
 
     return {
+        "schema_version": SCHEMA_VERSION,
         "files": len(files),
         "readiness": readiness,
         "rules": dict(rule_counts),

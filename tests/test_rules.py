@@ -1,10 +1,15 @@
 # -*- coding: utf-8 -*-
 import ast
+import os
+import shutil
 import sys
+import tempfile
 
 import pytest
 
-from py2scan.scanner import _tokenize
+from py2scan import rules as rules_module
+from py2scan.findings import Finding
+from py2scan.scanner import _tokenize, scan_file
 from py2scan.rules import (
     check_backtick,
     check_builtin_use,
@@ -417,3 +422,31 @@ def test_stdlib_import_in_nested_function_inside_try_is_still_a_blocker():
 def test_stdlib_import_outside_any_try_is_still_a_blocker():
     assert severities(check_stdlib_import, "import urllib2\n") == \
         [("PY3-STDLIB", "blocker")]
+
+
+def test_adding_a_rule_touches_at_most_two_files():
+    # Item 5: scanner.scan_file dispatches generically over
+    # rules.AST_RULES / VERSION_AWARE_AST_RULES / TOKEN_RULES - it never
+    # names a rule function itself (confirmed: `grep -n "check_"
+    # py2scan/scanner.py` has zero hits). So a new rule needs only its
+    # function plus a one-line append to the matching list, both in
+    # py2scan/rules.py, and a test in this file - never scanner.py.
+    # Proven by appending a throwaway rule straight to rules.AST_RULES at
+    # runtime (simulating that one-line append) and confirming scan_file
+    # picks it up immediately, with zero change to scanner.py itself.
+    def check_toy_rule(path, tree):
+        yield Finding(path, 1, "PY3-TOY-RULE-FOR-TEST", "warning", "toy")
+
+    rules_module.AST_RULES.append(check_toy_rule)
+    try:
+        root = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(root, "m.py"), "wb") as f:
+                f.write(b"x = 1\n")
+            findings, problem = scan_file(root, "m.py")
+        finally:
+            shutil.rmtree(root)
+    finally:
+        rules_module.AST_RULES.remove(check_toy_rule)
+    assert problem is None
+    assert [finding.rule for finding in findings] == ["PY3-TOY-RULE-FOR-TEST"]
