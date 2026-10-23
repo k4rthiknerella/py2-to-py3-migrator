@@ -1,7 +1,14 @@
-import os, sys, warnings
+import os
+import sys
+import warnings
+
 out = getattr(sys.stdout, "buffer", sys.stdout)
+
+
 def say(s):
     out.write((s + u"\n").encode("utf-8", "replace"))
+
+
 checked = bad = 0
 skipped = []
 for raw in open(sys.argv[1], "rb").read().split(b"\0"):

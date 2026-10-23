@@ -157,7 +157,8 @@ details ul { columns: 2 20rem; padding-left: 1.2rem; }
 <span class="detail">{{ ready }} of {{ files }} files have no blockers</span>
 </div>
 <div class="meter"><span style="width: {{ readiness }}"></span></div>
-<p class="totals">{{ blockers }} blocker{{ "s" if blockers != 1 }} and {{ warnings }} warning{{ "s" if warnings != 1 }}</p>
+<p class="totals">{{ blockers }} blocker{{ "s" if blockers != 1 }} and
+{{- " " }}{{ warnings }} warning{{ "s" if warnings != 1 }}</p>
 </header>
 
 <h2>Findings by rule</h2>
@@ -166,7 +167,8 @@ details ul { columns: 2 20rem; padding-left: 1.2rem; }
 <thead><tr><th>Rule</th><th>What it finds</th><th>Severity</th><th class="count">Findings</th></tr></thead>
 <tbody>
 {% for rule, severity, count in rules %}
-<tr><td><code>{{ rule.id }}</code></td><td>{{ rule.title|text }}</td><td><span class="sev {{ severity }}">{{ severity }}</span></td><td class="count">{{ count }}</td></tr>
+<tr><td><code>{{ rule.id }}</code></td><td>{{ rule.title|text }}</td>
+{{- "" }}<td><span class="sev {{ severity }}">{{ severity }}</span></td><td class="count">{{ count }}</td></tr>
 {% endfor %}
 </tbody>
 </table>
@@ -178,13 +180,17 @@ details ul { columns: 2 20rem; padding-left: 1.2rem; }
 <h2>Findings by file</h2>
 {% for path, findings in by_file.items() %}
 <section class="file">
-<h3><code>{{ path|text }}</code><span class="sev">{{ findings|length }} finding{{ "s" if findings|length != 1 }}</span></h3>
+<h3><code>{{ path|text }}</code>
+{{- "" }}<span class="sev">{{ findings|length }} finding{{ "s" if findings|length != 1 }}</span></h3>
 <table class="findings">
 <colgroup><col class="c-line"><col class="c-rule"><col class="c-sev"><col></colgroup>
 <tbody>
 {% for f in findings %}
-<tr class="finding"><td class="line">{{ f.line }}</td><td><code>{{ f.rule }}</code></td><td><span class="sev {{ f.severity }}">{{ f.severity }}</span></td><td>{{ f.message|text }}</td></tr>
-<tr class="src"><td></td><td colspan="3">{% if f.source is none %}<span class="missing">line {{ f.line }} is past the end of the file</span>{% else %}<pre><code>{{ f.source|code }}</code></pre>{% endif %}</td></tr>
+<tr class="finding"><td class="line">{{ f.line }}</td><td><code>{{ f.rule }}</code></td>
+{{- "" }}<td><span class="sev {{ f.severity }}">{{ f.severity }}</span></td><td>{{ f.message|text }}</td></tr>
+<tr class="src"><td></td><td colspan="3">
+{{- "" }}{% if f.source is none %}<span class="missing">line {{ f.line }} is past the end of the file</span>
+{{- "" }}{% else %}<pre><code>{{ f.source|code }}</code></pre>{% endif %}</td></tr>
 {% endfor %}
 </tbody>
 </table>

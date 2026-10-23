@@ -52,9 +52,9 @@ def scan_source(path, source):
     else:
         found = check(Module(tree, cst))
     lines = source_lines(source)
-    findings = [Finding(path, line, rule_id, RULES[rule_id].severity, message, col,
-                        lines[line - 1] if 0 < line <= len(lines) else None)
-                for rule_id, line, col, message in found]
+    findings = [Finding(path, lineno, rule_id, RULES[rule_id].severity, message, col,
+                        lines[lineno - 1] if 0 < lineno <= len(lines) else None)
+                for rule_id, lineno, col, message in found]
     findings.sort(key=Finding.key)  # stable, so ties keep the order the rule found them in
     return findings
 

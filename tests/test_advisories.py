@@ -229,7 +229,7 @@ def _requirement_lines():
 def test_requirements_name_only_packages_from_the_default_index():
     # pip CVE-2021-3572 and CVE-2023-5752 need a VCS URL; CVE-2026-13346 needs another index.
     lines = list(_requirement_lines())
-    assert len(lines) > 10 and [l for l in lines if not PIN.match(l[1])] == []
+    assert len(lines) > 10 and [entry for entry in lines if not PIN.match(entry[1])] == []
 
 
 def test_the_test_image_uses_the_default_index_and_skips_pips_self_check():
