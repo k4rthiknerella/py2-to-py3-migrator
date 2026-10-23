@@ -455,7 +455,7 @@ directly this session for both `cpe:2.3:a:python:python:2.7.18:...` and
   patch-version-aware in principle, re-queried separately if the 3.14.9
   local-check decision above matters here later).
 
-**Resolved, commit `pending`: full systematic Python 3.0–3.14 What's New
+**Resolved, commit `cc12b90`: full systematic Python 3.0–3.14 What's New
 Removed/Porting sweep.** Fetched every `docs.python.org/3/whatsnew/<v>.html`
 page for v in 3.0 through 3.14 this session, stripped to plain text, and
 grepped each version's Removed/Deprecated/Porting sections against
@@ -697,6 +697,11 @@ any other process (no pickle, cache, queue, or database).
 | 2026-10-22 | n/a (research, no code change) | py2scan | (R11, runtime deps) | `POST https://api.osv.dev/v1/query` for click 7.1.2, Jinja2 2.11.3, MarkupSafe 1.1.1, PyYAML 5.4.1, PyYAML 6.0.3, futures 3.3.0, six 1.17.0, pytest 4.6.11, pytest 9.1.1 | 0 vulns: click, MarkupSafe, both PyYAML pins, futures, six, pytest 9.1.1; Jinja2 2.11.3: 4 real CVEs (CVE-2025-27516, CVE-2024-22195, CVE-2024-34064, CVE-2024-56326); pytest 4.6.11: 1 real CVE (CVE-2025-71176) |
 | 2026-10-22 | n/a (research, no code change) | py2scan | (R11, Jinja2 reachability) | `grep -n "xmlattr\|sandbox\|Environment" py2scan/report.py` against the 4 Jinja2 CVEs' actual trigger conditions | `py2scan/report.py:13` uses a plain `jinja2.Environment(autoescape=True)`, never `SandboxedEnvironment`; `_TEMPLATE` never uses the `xmlattr` filter — none of the 4 CVEs have a reachable path through py2scan's own code |
 | 2026-10-22 | n/a (research, no code change) | py2scan | (R11, interpreter advisories) | `GET https://services.nvd.nist.gov/rest/json/cves/2.0?cpeName=cpe:2.3:a:python:python:2.7.18:...` and the same for `3.14.7` | 2.7.18: 38 raw matches, 3 confirmed false positives (`vulnerable: false` on the `python:python` CPE node in NVD's own `configurations` data), 35 remaining all have an unbounded (from-version-0) lower range bound, none concern a module py2scan's own code imports; 3.14.7: 4 raw matches, all 4 the same false-positive pattern, 0 genuine |
+| 2026-10-22 | n/a (research, no code change) | py2scan | (full sweep) | fetched and grepped `docs.python.org/3/whatsnew/{3.0..3.14}.html` against py2scan's own stdlib footprint | 1 genuine defect found (`os.listdir` undecodable filenames); everything else checked clean, reasoning recorded per item |
+| 2026-10-22 | n/a (research, no code change) | py2scan | (bad-byte filename, root cause) | real Docker fixture, a `.py` file named with a byte invalid in UTF-8, scanned via the actual CLI (text/json/html) on `python:2.7.18-slim` and `python:3.14-slim` | scan itself always correct; 2.7.18 output crashes with `UnicodeDecodeError` in all 3 formats; 3.14.9 output crashes with `UnicodeEncodeError` in text/html only (not json, whose `ensure_ascii=True` tolerates the lone surrogate) |
+| 2026-10-22 | cc12b90 | py2scan | (bad-byte filename fix) | same fixture, all 3 formats, after adding `encoding.py:safe_text` | 0 crashes on either interpreter; output identical across both (`bad_�_name.py`) |
+| 2026-10-22 | cc12b90 | py2scan | (bad-byte filename fix, full suite) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), 3.14.9 (Docker `python:3.14-slim`) | `117 passed, 2 skipped` on 2.7.18; `112 passed, 7 skipped` on 3.14.7 (2 new tests skip - Mac host filesystem rejects the fixture); `112 passed, 7 skipped` on 3.14.9 (2 new tests pass - Linux) |
+| 2026-10-22 | cc12b90 | py2scan | (bad-byte filename fix, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker `python:2.7.18-slim`, ad hoc `flake8<4`) and 3.14.7 (Homebrew venv) | 0 violations of any kind, both interpreters |
 
 ## Decisions
 - 2026-10-22, owner: `.md`-commit exception for `MIGRATION.md` and
