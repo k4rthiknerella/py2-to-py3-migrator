@@ -5,7 +5,7 @@ test: "pytest"
 compat: straddle
 ---
 # Python migration
-As of 2026-10-23 · commit 1a9359a · path: 2.7 -> 3.14
+As of 2026-10-23 · commit 818e534 · path: 2.7 -> 3.14
 
 py2scan migrates itself (not the codebases it scans) from its historical
 Python 2.7 runtime to Python 3.14, straddling both for as long as any
@@ -28,7 +28,7 @@ not any scanned codebase's.
 ## Blockers
 ### py2scan
 None open. `.py-migrate/compile_check.py` passes on both interpreters
-(receipt below); the test suite (136 tests) passes on both (134 passed,
+(receipt below); the test suite (149 tests) passes on both (147 passed,
 2 skipped under 2.7.18 -- the skips are the two permission-bit tests
 that root inside Docker bypasses, same as always); flake8 is clean on
 both (`max-complexity = 10`, `max-line-length = 100`, see `setup.cfg`).
@@ -144,20 +144,70 @@ both now match autosteer-architect's stated counts exactly. The earlier
 "open discrepancy" in this section is closed.
 
 Every genuine 2.7.18-interpreter CVE, plus the one found for 3.14.9, was
-checked against py2scan's own exercised stdlib surface (`collections`,
-`concurrent.futures`, `errno`, `functools`, `io`, `json`, `os`, `re`,
-`stat`, `subprocess`, `sys`, `tokenize` -- the full `grep` receipt is in
-Evidence). None of the 37 touch a module py2scan imports (they cluster
-in `tarfile`, `webbrowser`, `urllib.parse`, `email`, `plistlib`,
-`heapq`, `hmac`, `http.cookies`, `xml.*`, `base64`, `configparser`,
-`html.parser`, `shutil`, `pkgutil`, and Windows installer/venv-CLI code
--- none of which py2scan ever imports or invokes); the one that looked
-closest, `os.path.expandvars` quadratic cost (CVE-2025-6075), is not
-reachable either since py2scan never calls `expandvars`, `expanduser`,
-or anything in `shutil` (confirmed by the same `grep`). The 3.14.9
-finding, `CVE-2026-114583` (`tarfile.tar_filter` bypass via crafted
-symlink entries), is not reachable for the same reason as every other
-`tarfile` CVE here: `tarfile` is never imported.
+checked against py2scan's own actual import list (`grep -rn "^import
+\|^from .* import" py2scan/*.py py2scan/rules/*.py`): `json`, `sys`,
+`click`, `yaml`, `encodings`, `re`, `io`, `tokenize`, `warnings`,
+`parso`, `os`, `collections` (`Counter`, `OrderedDict`), `jinja2`,
+`errno`, `functools`, `stat`, `subprocess`, `concurrent.futures`. None
+of the 37 touch a module on that list (they cluster in `tarfile`,
+`webbrowser`, `urllib`/`urllib.parse`, `email`, `plistlib`, `heapq`,
+`hmac`, `http.cookies`/`http.client`, `xml.*`, `base64`,
+`configparser`, `html.parser`, `shutil`, `pkgutil`, `ssl`, `wave`, and
+Windows installer/venv-CLI code -- none of which py2scan ever imports
+or invokes, confirmed by the same `grep`, re-run clean on this pass).
+The one that looked closest, `os.path.expandvars` quadratic cost
+(CVE-2025-6075), is not reachable either: py2scan imports `os`, but
+`grep -rn "expandvars" py2scan/` finds zero calls anywhere in the
+package. The 3.14.9 finding, `CVE-2026-114583` (`tarfile.tar_filter`
+bypass via crafted symlink entries), is not reachable for the same
+reason as every other `tarfile` CVE here: `tarfile` is never imported.
+
+**Full list, all 37, each with its own receipt** (the independent
+check's finding: the triage table below used to say "full list in
+Evidence" when no committed file actually enumerated them -- this
+table is that enumeration, queried fresh this pass via the NVD
+CPE-match + OSV-by-commit methodology above, not copied from the
+superseded pass's prose):
+
+| CVE | Affected module | Reachable in py2scan? |
+|---|---|---|
+| CVE-2007-4559 | `tarfile` (`extract`/`extractall` path traversal) | No - never imported |
+| CVE-2015-5652 | Windows installer (`python.exe` search path) | No - not a module; installer-path issue |
+| CVE-2017-17522 | `webbrowser` | No - never imported |
+| CVE-2017-18207 | `wave` | No - never imported |
+| CVE-2021-23336 | `urllib.parse` (web cache poisoning) | No - never imported |
+| CVE-2021-3733 | `urllib` (`AbstractBasicAuthHandler` ReDoS) | No - never imported |
+| CVE-2022-0391 | `urllib.parse` (header injection) | No - never imported |
+| CVE-2022-26488 | Windows installer (search path) | No - not a module; installer-path issue |
+| CVE-2022-45061 | IDNA decoder (`encodings.idna`, quadratic cost) | No - `encodings` is imported but never asked to decode an IDNA hostname; py2scan does no networking |
+| CVE-2022-48560 | `heapq` (`heappushpop` use-after-free) | No - never imported |
+| CVE-2022-48564 | `plistlib` (binary plist DoS) | No - never imported |
+| CVE-2022-48565 | `plistlib` (XXE) | No - never imported |
+| CVE-2022-48566 | `hmac` (`compare_digest` timing) | No - never imported |
+| CVE-2023-24329 | `urllib.parse` (blocklist bypass) | No - never imported |
+| CVE-2023-27043 | `email` (address parsing) | No - never imported |
+| CVE-2023-36632 | `email.utils` (`parseaddr` recursion) | No - never imported |
+| CVE-2023-40217 | `ssl` (TLS client-auth bypass) | No - never imported |
+| CVE-2024-6232 | `tarfile` (header-parsing ReDoS) | No - never imported |
+| CVE-2024-7592 | `http.cookies` | No - never imported |
+| CVE-2024-9287 | `venv` CLI (path quoting) | No - never imported |
+| CVE-2025-12084 | `xml.dom.minidom` (quadratic `_clear_id_cache`) | No - never imported |
+| CVE-2025-12781 | `base64` (`b64decode` altchars) | No - never imported |
+| CVE-2025-13462 | `tarfile` (GNU long-name normalization) | No - never imported |
+| CVE-2025-13836 | `http.client` (unbounded `Content-Length` read) | No - never imported |
+| CVE-2025-13837 | `plistlib` (unbounded size read, OOM) | No - never imported |
+| CVE-2025-6075 | `os.path.expandvars` (quadratic cost) | No - `os` is imported but `expandvars` is never called anywhere in `py2scan/` (grep) |
+| CVE-2026-0864 | `configparser` (CRLF key/value injection) | No - never imported |
+| CVE-2026-15308 | `html.parser` (unterminated-markup DoS) | No - never imported |
+| CVE-2026-3087 | `shutil.unpack_archive` (Windows drive-path escape) | No - never imported |
+| CVE-2026-3644 | `http.cookies` (`Morsel` control-char bypass) | No - never imported |
+| CVE-2026-4224 | Expat / `xml.parsers.expat` (stack overflow) | No - never imported |
+| CVE-2026-4360 | `tarfile` (`extract` filter not applied to hardlinks) | No - never imported |
+| CVE-2026-4519 | `webbrowser` (leading-dash argument injection) | No - never imported |
+| CVE-2026-6019 | `http.cookies` (`Morsel.js_output` HTML injection) | No - never imported |
+| CVE-2026-7210 | `xml.parsers.expat` / `xml.etree.ElementTree` (hash flooding) | No - never imported |
+| CVE-2026-19672 | `tarfile` (extraction filter containment bypass) | No - never imported |
+| CVE-2026-3479 | `pkgutil.get_data` | No - never imported; also disputed by upstream (documentation-only clarification, not a real vulnerability per the CVE record itself) |
 
 | Finding | Affects | Reachable in py2scan? | Decision | Revisit by |
 |---|---|---|---|---|
@@ -167,7 +217,7 @@ symlink entries), is not reachable for the same reason as every other
 | 1 wheel CVE (GHSA-qwmp-2cf2-g9g6, ReDoS) | wheel 0.34.2, transitive; confirmed still present, unfixed, in 0.37.1, the newest 2.7-compatible release | No, same shape. | Accept, not reachable; no fix exists in any 2.7-compatible wheel release. | 2027-04-22 |
 | 1 zipp CVE (GHSA-jfmj-5v4g-7637, DoS via a crafted zip) | zipp 1.2.0, transitive (pulled in by `importlib-metadata`, itself a 2.7-compat backport some dev tool needs); 1.2.0 is already the newest 2.7-compatible zipp release -- no newer version to check | No. py2scan never imports `importlib.metadata` or `zipp`; nothing in py2scan's own code ever asks either to open a zip. | Accept, not reachable; no fix exists in any 2.7-compatible zipp release (there is none newer at all). | 2027-04-22 |
 | CVE-2025-71176 / GHSA-6w46-j5rx-g56g (pytest predictable `/tmp/pytest-of-{user}`) | pytest 4.6.11 (2.7-side, dev-only) | `tmp_path`/`tempfile.mkdtemp()` fixtures do execute throughout `tests/`, but the attacker precondition (another untrusted local account on the same machine racing to pre-create/symlink that path) doesn't hold for this repo's current usage (solo-maintainer local/Docker/CI, no other local principals). | Already handled on the 3.x side (bumped to 9.0.3, commit c133712). 2.7 side: accept, no fix exists in the 2.7-compatible pytest line (4.x is the last one; pytest dropped 2.7 support before 9.0.3). | 2027-04-22: re-check whether any 2.7-compatible pytest release ever backports this (unlikely, but this is the scheduled check regardless of how unlikely it seems now -- that's the point of a revisit date instead of reasoning "no expiry possible"). |
-| 37 genuine CPython 2.7.18 interpreter CVEs (35 via NVD CPE-match + CVE-2026-19672 and the disputed CVE-2026-3479 via OSV-by-commit; full list in Evidence) | CPython 2.7.18 itself | No, for any of them, through py2scan's own exercised stdlib surface (`collections`, `concurrent.futures`, `errno`, `functools`, `io`, `json`, `os`, `re`, `stat`, `subprocess`, `sys`, `tokenize`) -- see paragraph above for the module-by-module check, including the one (`os.path.expandvars`) that shares an imported module. | Accept, not reachable. New proposal (reissues the superseded pass's interpreter row, now from NVD+OSV-by-commit queries instead of a web-search list, with a date). | 2027-04-22: re-run both the NVD CPE-match and OSV-by-commit queries against whatever 2.7.18 patch/successor is still in use then. |
+| 37 genuine CPython 2.7.18 interpreter CVEs (35 via NVD CPE-match + CVE-2026-19672 and the disputed CVE-2026-3479 via OSV-by-commit; full per-CVE list and receipt is the table directly above this one, not just this summary row) | CPython 2.7.18 itself | No, for any of them, through py2scan's own actual import list -- see the per-CVE table above for the module-by-module receipt, including the one (`os.path.expandvars`) that shares an imported module but is never called. | Accept, not reachable. New proposal (reissues the superseded pass's interpreter row, now from NVD+OSV-by-commit queries instead of a web-search list, with a date). | 2027-04-22: re-run both the NVD CPE-match and OSV-by-commit queries against whatever 2.7.18 patch/successor is still in use then. |
 | CVE-2026-114583 (`tarfile.tar_filter` bypass via crafted symlink entries) -- found via OSV-by-commit, not NVD CPE-match (enrichment lag); matches autosteer-architect's stated "1 open advisory for 3.14.9" exactly | CPython 3.14.9 | No. `tarfile` is never imported by py2scan (same as every other `tarfile` CVE in the 2.7.18 row above). | Accept, not reachable. New proposal. | 2027-04-22: re-run OSV-by-commit against whatever 3.14.9 patch/successor's tag commit is current then. |
 
 **Action taken from this pass:** none beyond the pytest 3.x bump already
@@ -260,6 +310,10 @@ Never merged into this branch or `main`; never pushed.
 | 2026-10-23 | 37ec7c2 | py2scan | 2.7->3.14 | R1 violated, found by AutoSteer CI (new hostile/stdlib checks) | Two more R1 gaps the backstop couldn't cover (same root cause as always: it only speaks for py2scan's own running version). (1) `PY3-BAD-ESCAPE`: real CPython 2.7's `json/__init__.py` docstring writes literal "\uXXXX" text; Python 2's plain str never treats `\u`/`\U`/`\N` as escapes, Python 3's always does, and "XXXX" isn't valid hex -- a SyntaxError on every judged version. New AST rule, excludes `r"..."`/`b"..."` prefixes, only flags incomplete escapes (not well-formed ones, a separate meaning-drift question). (2) `PY3-DEEP-NESTING`: CPython 3.6-3.8's old pgen2 compiler has a fixed symtable stack depth that 3.9's PEG parser removed; empirically bounded via `docker run python:X-slim` across depths 50-200 on every judged minor (3.6/3.7/3.8 fail around 95-99, everything else compiles 200 fine) -- new token rule flags above a conservative threshold (50) for 3.6-3.8 only | Real stdlib's `json` module: byte-identical findings and JSON output between 2.7.18 and 3.14.3 (closes the separately reported "stdlib JSON differs" symptom too). 150-deep nested-parens hostile case: flagged for 3.6/3.7/3.8 only, matching real per-version compile results. Full suite + flake8 clean on 2.7.18, 3.14.3, real 3.14.9 |
 | 2026-10-23 | f0388aa | py2scan | 2.7->3.14 | R5 violated, found by AutoSteer CI (hostile/non_utf8_name) | A file named with a raw non-UTF-8 byte crashed the *entire* scan under Python 2.7 with an unhandled `UnicodeDecodeError` from `json.dumps()` (Python 2's json encoder decodes `str` dict keys/values as UTF-8), not an unreadable-file entry for just that file -- R5's "never dropped silently" broken for every other file in the same run too. Fix is display-boundary only, not discovery/scanning: `encoding.display_path()` decodes with `errors="replace"` on Python 2 only, applied at the three places a path becomes output (JSON, `Finding.to_dict()`, text echo, `render_html`'s displayed name) and nowhere that opens a file (`render_html` opens with the original bytes first, displays the sanitized form separately) | Verified end to end on real 2.7.18 (Docker): `--format json`, `--format text`, and `--html` all now report the file's real finding instead of crashing. New integration test passes on Linux under both 2.7.18 and real 3.14.9, skips cleanly on macOS (which refuses to create the file at all). Full suite + flake8 clean on 2.7.18, 3.14.3, real 3.14.9 |
 | 2026-10-23 | 1a9359a | py2scan | 2.7->3.14 | R2 violated, found by AutoSteer CI (hostile/non_utf8_name, next notice) | f0388aa fixed Python 2's crash but left Python 3 untouched on the reasoning that os.walk already returns valid unicode there -- true, but incomplete: it gets there via surrogateescape, round-tripping the byte through a lone surrogate, not through the same U+FFFD Python 2's "replace" produces. `json.dumps()` doesn't raise on a lone surrogate, so nothing crashed, but the identical real file produced different JSON bytes per host. Fixed: `display_path` on Python 3 now undoes the surrogateescape round-trip (encode utf-8/surrogateescape) and re-applies the same utf-8/"replace" step, converging both hosts on the same text. Also fixed the Python-2-only test AutoSteer flagged as asymmetric (skipped entirely on 3.14) -- rewrote it to assert the identical result on both interpreters instead of skipping one | Byte-identical JSON confirmed on real CPython 2.7.18 and real 3.14.9 (Docker) for the actual repro. Full suite + flake8 clean on all three; the rewritten test passes on both sides with no skip |
+| 2026-10-23 | 22562c7 | py2scan | 2.7->3.14 | R1 violated, found by independent check round 2 (item 1) | A coding cookie naming a non-text codec (`rot13`; six more in the same stdlib family -- base64, bz2, hex, quopri, uu, zlib/zip) decodes without error on 2.7.18 (str and bytes are the same type there), so parso's own parse succeeds there and no AST/token rule has a reason to object -- reported free of blockers for every judged Python 3 version. Every judged version actually rejects the cookie before parsing starts (`codecs.CodecInfo._is_text_encoding = False`, confirmed identical on real 3.6.15 and 3.14.9). New `py2scan.encoding.bad_coding_cookie()`, wired into `scan_file` as a universal blocker whenever present | `rot13`+`ok.py` repro: free-of-blockers before, correctly blocked for all 10 versions after, on both real 2.7.18 and real 3.14.9. Full suite (137 passed, 2 skipped) + flake8 clean on both |
+| 2026-10-23 | b7f47b5 | py2scan | 2.7->3.14 | R6/R7 violated, found by independent check round 2 (item 2) | `PY3-DEEP-NESTING`'s flat threshold (50) flagged 60-deep nesting as a blocker for 3.6/3.7/3.8 even though all three really compile it (real cutoff is higher), and separately flagged 3.8 at 95-deep even though real 3.8's own cutoff (99) hadn't been reached yet -- one shared threshold instead of each version's own measured number. Swept depths 80-104 against real 3.6.15/3.7.17/3.8.20 (`docker run python:X-slim`, `py_compile.compile()` per depth): first failure at 93 for 3.6 and 3.7, 99 for 3.8, matching the independent check's own measured numbers exactly. Replaced the flat threshold with a per-version map; each Finding now names only the versions whose own cutoff the file's depth actually reaches | Full suite (141 passed, 2 skipped) + flake8 clean on real 2.7.18 and real 3.14.9. New tests cover the 60-deep and 95-deep repros plus the exact measured boundary (92/93, 98/99) on each side |
+| 2026-10-23 | fdb19ae | py2scan | 2.7->3.14 | R8 violated, found by independent check round 2 (item 4) | `import hotshot` alone got no finding -- `hotshot` was missing from both `UNIVERSAL_STDLIB_MODULES` and `VERSIONED_STDLIB_REMOVALS`, built by hand against PEP 3108 and never cross-checked against the complete real Lib/ listing. Swept all 215 top-level names under real 2.7.18's `Lib/`, ran `import NAME` against real 3.6.15 through 3.15.1 (one container per version), diffed against what the two lists already covered: 8 missing names fail on every judged version (`bsddb`, `dummy_thread`, `hotshot`, `os2emxpath`, `statvfs`, `sunaudio`, `toaiff`, `xmllib`); 2 more are version-specific (`macurl2path` gone at 3.7, a full minor before its companion `macpath`'s 3.8; `dummy_threading` gone at 3.9) | `import hotshot` alone now reports a blocker for every judged version on both real 2.7.18 and real 3.14.9. Full suite (144 passed, 2 skipped) + flake8 clean on both |
+| 2026-10-23 | 818e534 | py2scan | 2.7->3.14 | R3/R10 violated (3 missed, 3 false positives), found by independent check round 2 (item 3) | Two root causes in the scope collector. (1) `_enclosing_funcdef` walked straight past any classdef looking for the nearest enclosing *function*, so a method's own name (or a nested class's own name) ended up bound at module scope instead of nowhere -- real repro, CPython 2.7's own `code.py` defines `InteractiveInterpreter.raw_input(self, prompt)`, whose body calls the bare name `raw_input()` (the builtin); the bug wrongly suppressed every real builtin use of `raw_input` anywhere else in the module. (2) parso has two distinct node types for an aliased import -- `import X as Y` (`dotted_as_name`, handled) vs. `from M import X as Y` (`import_as_name`, not handled) -- so a from-import's alias target was never recognized as a binding at all; real repro, pip's vendored `urllib3/response.py` does `from .packages.six import string_types as basestring` then reads the bare name `basestring` later, flagging both the binding and the reference as false positives. Fixed with a new `_enclosing_scope()` (stops at a classdef too, binding nothing there) and an `import_as_name` branch in `_dotted_as_bound_leaves` | `code.py` now finds line 281's `raw_input()` (previously missed) and still finds its one other real use; `response.py` now finds zero (previously 2 false positives). Full suite (147 passed, 2 skipped) + flake8 clean on real 2.7.18 and real 3.14.9 |
 
 ## Decisions
 None accepted yet. The security triage's first pass proposed several
