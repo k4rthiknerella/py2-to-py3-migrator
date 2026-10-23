@@ -84,12 +84,21 @@ def summarize(files, findings, problems=None, judged_versions=None):
     be ready for 3.9 while still blocked on 3.12. A finding with
     versions=None (only possible when a caller builds a Finding directly,
     bypassing scanner.scan_file's fill-in) is treated as applying to
-    every version judged_versions asks about."""
+    every version judged_versions asks about.
+
+    file_readiness says, for every scanned file - including one with no
+    findings at all, which otherwise never appears anywhere else in this
+    dict - exactly which judged versions it is ready for (R6: "for each
+    file, the report says which versions it is ready for"; found missing
+    by AutoSteer CI against the real stdlib and the hostile input set,
+    where the large majority of files have no findings and so were never
+    named anywhere in the JSON output at all)."""
     problems = problems or []
     judged_versions = judged_versions or ALL_TARGET_VERSIONS
     findings = sorted(findings, key=_sort_key)
 
     readiness = {}
+    blocked_versions_by_file = collections.defaultdict(set)
     for version in judged_versions:
         if files:
             blocker_files = set(
@@ -98,8 +107,16 @@ def summarize(files, findings, problems=None, judged_versions=None):
                 and (f.versions is None or version in f.versions))
             readiness[version] = (
                 100.0 * (len(files) - len(blocker_files)) / len(files))
+            for file in blocker_files:
+                blocked_versions_by_file[file].add(version)
         else:
             readiness[version] = 100.0
+
+    file_readiness = {
+        safe_text(file): [v for v in judged_versions
+                          if v not in blocked_versions_by_file.get(file, ())]
+        for file in files
+    }
 
     rule_counts = collections.Counter(f.rule for f in findings)
 
@@ -107,6 +124,7 @@ def summarize(files, findings, problems=None, judged_versions=None):
         "schema_version": SCHEMA_VERSION,
         "files": len(files),
         "readiness": readiness,
+        "file_readiness": file_readiness,
         "rules": dict(rule_counts),
         "findings": [f.to_dict() for f in findings],
         "complete": not problems,

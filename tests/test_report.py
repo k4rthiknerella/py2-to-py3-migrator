@@ -54,6 +54,39 @@ def test_readiness_only_counts_versions_a_finding_applies_to():
     assert summary["readiness"]["3.12"] == 50.0
 
 
+def test_file_readiness_names_every_file_even_with_no_findings():
+    # R6: the report says, per file, which versions it is ready for - a
+    # clean file never appears in "findings" at all, so without this key
+    # it would be named nowhere in the report (found missing by AutoSteer
+    # CI: 57% of the real stdlib's files had no findings and so were
+    # invisible in the JSON output).
+    summary = summarize(["a.py", "b.py"], [],
+                        judged_versions=("3.9", "3.12"))
+    assert summary["file_readiness"] == {
+        "a.py": ["3.9", "3.12"], "b.py": ["3.9", "3.12"]}
+
+
+def test_file_readiness_excludes_only_the_versions_a_file_is_blocked_on():
+    findings = [Finding("a.py", 1, "PY3-STDLIB", "blocker", "x",
+                        versions=("3.12",))]
+    summary = summarize(["a.py", "b.py"], findings,
+                        judged_versions=("3.9", "3.12"))
+    assert summary["file_readiness"]["a.py"] == ["3.9"]
+    assert summary["file_readiness"]["b.py"] == ["3.9", "3.12"]
+
+
+def test_file_readiness_a_warning_does_not_block_any_version():
+    findings = [Finding("a.py", 1, "PY3-DIVISION", "warning", "x")]
+    summary = summarize(["a.py"], findings, judged_versions=("3.9", "3.12"))
+    assert summary["file_readiness"]["a.py"] == ["3.9", "3.12"]
+
+
+def test_file_readiness_version_invariant_finding_blocks_every_version():
+    findings = [Finding("a.py", 1, "PY3-PRINT", "blocker", "x")]
+    summary = summarize(["a.py"], findings, judged_versions=("3.9", "3.12"))
+    assert summary["file_readiness"]["a.py"] == []
+
+
 def test_rules_counts_only_include_rules_with_findings():
     findings = [Finding("a.py", 1, "PY3-PRINT", "blocker", "x"),
                 Finding("a.py", 2, "PY3-PRINT", "blocker", "y")]

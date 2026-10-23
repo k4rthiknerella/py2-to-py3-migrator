@@ -926,6 +926,51 @@ Python 3 anyway, since `ast.parse` already raises first.
 Full suite: 142 passed, 2 skipped (2.7.18); 135 passed, 9 skipped
 (3.14.7, 3.14.9). flake8 `--max-complexity 10` clean on all three.
 
+**Resolved, commit `pending`: `file_readiness`, closing R6's "for each
+file, the report says which versions it is ready for" - AutoSteer CI's
+own gloss on R6, confirmed as a real gap, not a misreading.** Before
+this: `summarize()`'s `"findings"` list only ever contains files that
+have at least one finding, and `"files"` is a count, not a list - a
+clean file (no findings at all) was named *nowhere* in the JSON output,
+with no way for a consumer to tell "this file was scanned and is ready
+for every version" apart from "this file was never scanned at all."
+Confirmed at scale by AutoSteer against the real stdlib: 623/1104 files
+on the 2.7 side, 640/1104 on the 3.14 side, and all 11/11 hostile test
+cases' `ok.py` (which has zero findings by construction) were affected.
+
+Added a new key, `file_readiness`: `{relpath: [the judged versions that
+file is ready for]}`, built in `report.py:summarize()` by reusing the
+same per-version `blocker_files` set the existing `readiness` percentage
+loop already computes (no duplicated blocker-finding logic) and
+inverting it per file. An empty list means blocked on every judged
+version; a file with no entry never happens, since every file in `files`
+always gets a `file_readiness` entry regardless of whether it has any
+findings. Did not bump `SCHEMA_VERSION`: this is a strictly additive new
+key, not a change to any existing key's shape, so an existing consumer
+that ignores unknown keys keeps working unchanged - `SCHEMA_VERSION`'s
+own stated purpose (see its addition above) is to flag a *breaking*
+shape change, which this is not.
+
+**Scope, stated explicitly:** only the JSON output gained this key.
+AutoSteer's own hostile-input reproduction command
+(`python -m py2scan scan --format json <case dir>`) is JSON-only, and
+JSON is the machine-checkable "report" data contract R6 is about; the
+existing HTML report already shows a per-version readiness table and a
+per-finding versions column, and a file with zero findings never having
+its own HTML row is a reasonable property of human-readable output (no
+news is good news), not something this fix changed.
+
+4 new tests (`tests/test_report.py`), including the empty-findings case
+that was previously impossible to express at all through this key, the
+version-scoped-blocker case, a warning not blocking any version, and a
+version-invariant blocker blocking every version. Verified directly
+against a real reproduction of AutoSteer's own `hostile/nul_byte` case
+(`ok.py` + `t.py`): `{"ok.py": [... all 10 judged versions ...], "t.py":
+[]}`.
+
+Full suite: 146 passed, 2 skipped (2.7.18); 139 passed, 9 skipped
+(3.14.7, 3.14.9). flake8 `--max-complexity 10` clean on all three.
+
 ## Flip preparation (prepared, not executed — see commit `09a45fd` for the
 one piece of infra this added; nothing below was merged, shipped, or
 changed outside this branch)
@@ -1083,6 +1128,10 @@ any other process (no pickle, cache, queue, or database).
 | 2026-10-23 | 4e52811 | py2scan | (`PY3-UR-STRING`/`PY3-UNICODE-ESCAPE` fix) | `scan_file` against the exact 3 real files AutoSteer named, inside `py2scan-test` (2.7.18) | `posixpath.py` → 1 `PY3-UR-STRING` blocker; `fix_unicode.py` → 4 `PY3-UR-STRING` blockers; `json/__init__.py` → 1 `PY3-UNICODE-ESCAPE` blocker — all 3 R1 violations closed |
 | 2026-10-23 | 4e52811 | py2scan | (`PY3-UR-STRING`/`PY3-UNICODE-ESCAPE` fix, full suite) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), 3.14.9 (Docker `py2scan-test314`) | `142 passed, 2 skipped` on 2.7.18; `135 passed, 9 skipped` on 3.14.7 and 3.14.9 |
 | 2026-10-23 | 4e52811 | py2scan | (`PY3-UR-STRING`/`PY3-UNICODE-ESCAPE` fix, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker, ad hoc `flake8<4`), 3.14.7 (Homebrew venv), and 3.14.9 (Docker `py2scan-test314`, ad hoc `flake8`) | 0 violations, all three |
+| 2026-10-23 | n/a (AutoSteer CI notice, no code change yet) | py2scan | (AutoSteer CI finding, R6 "named nowhere") | AutoSteer CI run against the real stdlib and the 11-case hostile input set | stdlib: 623/1104 files (2.7 side), 640/1104 (3.14 side) named nowhere in the JSON report; hostile: 11/11 cases' `ok.py` named nowhere |
+| 2026-10-23 | pending | py2scan | (`file_readiness` fix) | real reproduction of `hostile/nul_byte` (`ok.py` + `t.py`), `python -m py2scan scan --format json` | `file_readiness` = `{"ok.py": [all 10 judged versions], "t.py": []}` — both files now named |
+| 2026-10-23 | pending | py2scan | (`file_readiness` fix, full suite) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), 3.14.9 (Docker `py2scan-test314`) | `146 passed, 2 skipped` on 2.7.18; `139 passed, 9 skipped` on 3.14.7 and 3.14.9 |
+| 2026-10-23 | pending | py2scan | (`file_readiness` fix, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker, ad hoc `flake8<4`), 3.14.7 (Homebrew venv), and 3.14.9 (Docker `py2scan-test314`, ad hoc `flake8`) | 0 violations, all three |
 
 ## Decisions
 - 2026-10-22, owner: `.md`-commit exception for `MIGRATION.md` and
