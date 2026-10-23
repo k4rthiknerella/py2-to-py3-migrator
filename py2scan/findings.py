@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from py2scan.encoding import safe_text
 
 
 class Finding(object):
@@ -22,6 +23,6 @@ class Finding(object):
         return (self.file, self.line, self.rule)
 
     def to_dict(self):
-        return {"file": self.file, "line": self.line, "rule": self.rule,
-                "severity": self.severity, "message": self.message,
-                "versions": list(self.versions or ())}
+        return {"file": safe_text(self.file), "line": self.line,
+                "rule": self.rule, "severity": self.severity,
+                "message": self.message, "versions": list(self.versions or ())}

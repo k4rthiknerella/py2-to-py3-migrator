@@ -7,7 +7,7 @@ import os
 
 import jinja2
 
-from py2scan.encoding import read_lines
+from py2scan.encoding import read_lines, safe_text
 from py2scan.rules import ALL_TARGET_VERSIONS
 
 _ENV = jinja2.Environment(autoescape=True)
@@ -107,7 +107,7 @@ def summarize(files, findings, problems=None, judged_versions=None):
         "rules": dict(rule_counts),
         "findings": [f.to_dict() for f in findings],
         "complete": not problems,
-        "problems": [{"path": path, "reason": reason}
+        "problems": [{"path": safe_text(path), "reason": reason}
                      for path, reason in sorted(problems)],
     }
 
@@ -123,7 +123,9 @@ def render_html(root, findings, summary):
 
     findings_by_file = collections.OrderedDict()
     for f in sorted(findings, key=_sort_key):
-        findings_by_file.setdefault(f.file, []).append(f)
+        # safe_text for the heading only: source_line(f) below still uses
+        # f.file itself (not this dict's key) to reopen the real file.
+        findings_by_file.setdefault(safe_text(f.file), []).append(f)
 
     readiness_rows = sorted(
         summary["readiness"].items(),

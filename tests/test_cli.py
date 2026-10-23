@@ -2,6 +2,7 @@
 import json
 import os
 import shutil
+import sys
 import tempfile
 
 import pytest
@@ -187,3 +188,42 @@ def test_scan_target_version_defaults_to_all():
     assert sorted(payload["readiness"]) == [
         "3.10", "3.11", "3.12", "3.13", "3.14", "3.15", "3.6", "3.7",
         "3.8", "3.9"]
+
+
+def test_scan_handles_a_bad_byte_filename_in_every_format():
+    # See tests/test_scanner.py's test_bad_byte_filename_is_scanned_and_
+    # stays_safe_to_serialize for why this filename is adversarial: it used
+    # to crash json.dumps/text formatting/the HTML template on Python 2
+    # (never Python 3), even though the file itself scanned cleanly.
+    root = tempfile.mkdtemp()
+    html_path = os.path.join(root, "report.html")
+    try:
+        if sys.version_info[0] >= 3:
+            bad_path = os.path.join(root.encode("utf-8"), b"bad_\xff_name.py")
+        else:
+            bad_path = os.path.join(root, "bad_\xff_name.py")
+        try:
+            with open(bad_path, "wb") as f:
+                f.write(b"x = unicode('hi')\n")
+        except (OSError, IOError):
+            pytest.skip("filesystem rejects an invalid-UTF-8 byte in a name")
+
+        json_result = CliRunner().invoke(
+            main, ["scan", "--format", "json", root])
+        text_result = CliRunner().invoke(main, ["scan", root])
+        html_result = CliRunner().invoke(
+            main, ["scan", "--html", html_path, root])
+        with open(html_path, "rb") as f:
+            html = f.read().decode("utf-8")
+    finally:
+        shutil.rmtree(root)
+
+    assert json_result.exit_code == 1, json_result.output
+    payload = json.loads(json_result.output)  # must parse - never raised
+    assert payload["findings"][0]["rule"] == "PY3-BUILTIN"
+
+    assert text_result.exit_code == 1, text_result.output
+    assert "PY3-BUILTIN" in text_result.output
+
+    assert html_result.exit_code == 1, html_result.output
+    assert "PY3-BUILTIN" in html

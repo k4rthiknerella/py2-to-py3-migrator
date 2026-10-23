@@ -51,7 +51,7 @@ derivation recorded. Not started; folded into the same R6/R7/R8 matrix work.
 ## Units
 | Unit | Owner | Runtime today | Effective target | Step | Level | Blockers (auto / manual) | Size | Next |
 |---|---|---|---|---|---|---|---|---|
-| py2scan | Karthik Nerella | 2.7.18 | 3.14 | 2.7.18 → 3.14 | L2 | 0 auto / 1 manual (full What's New sweep) | L | `fix py2scan` |
+| py2scan | Karthik Nerella | 2.7.18 | 3.14 | 2.7.18 → 3.14 | L2 | 0 auto / 0 manual | S | `verify py2scan` |
 
 L2 is proved by `.py-migrate/compile_check.py`, committed, run on both sides —
 see Evidence. No consumers import py2scan as a library (it is a CLI-only
@@ -455,10 +455,114 @@ directly this session for both `cpe:2.3:a:python:python:2.7.18:...` and
   patch-version-aware in principle, re-queried separately if the 3.14.9
   local-check decision above matters here later).
 
-**Still open:**
-- Full systematic Python 3.0–3.14 What's New Removed/Porting sweep — not
-  started; only targeted/suspected items have been checked so far (see
-  Breaking changes in scope).
+**Resolved, commit `pending`: full systematic Python 3.0–3.14 What's New
+Removed/Porting sweep.** Fetched every `docs.python.org/3/whatsnew/<v>.html`
+page for v in 3.0 through 3.14 this session, stripped to plain text, and
+grepped each version's Removed/Deprecated/Porting sections against
+py2scan's own exact stdlib footprint — `json`, `sys`, `io`, `collections`,
+`os`, `ast`, `functools`, `platform`, `stat`, `tokenize`,
+`concurrent.futures`, `re` (`grep -n "^import \|^from " py2scan/*.py`),
+plus the precise attributes/functions py2scan's own code actually calls
+on each (e.g. `ast.Print`/`Raise.inst`, not every `ast` attribute that
+exists; `os.listdir`/`os.stat`/`stat.S_ISDIR`/`S_ISREG`, not every `os`
+function) — not the full module, since an unrelated removed function in
+a module py2scan imports is not a defect if py2scan never calls it.
+
+Found and fixed one genuine, previously-undiscovered defect this way, not
+just confirmed-clean coverage:
+- `py2scan/*.py` (`findings.py:to_dict`, `report.py:summarize`/
+  `render_html`, `cli.py`'s text-mode output) · **Discovered from reading
+  What's New in Python 3.0's note that `os.listdir()` can return raw,
+  undecoded bytes for a filename on a byte-oriented (POSIX) filesystem.**
+  Verified on real Linux containers (not theorized): a `.py` file whose
+  name contains a byte invalid in UTF-8 (a legacy-encoded name, plausible
+  in exactly the kind of old codebase py2scan scans) is read, tokenized,
+  and ast.parse'd completely correctly by `scan_file` on every
+  interpreter — the scan itself was never the problem. The crash was
+  downstream, in *output*, and took two different forms depending on the
+  interpreter, discovered one empirical test at a time:
+  - **Python 2.7.18** (verified via a real Docker `python:2.7.18-slim`
+    fixture): `os.listdir()` returns such a filename exactly as stored,
+    with no decoding attempted at all (`str` is bytes on 2.7). The raw
+    byte string then reaches `json.dumps()`, the `u"%s" %` text-mode
+    formatting, and the Jinja2 HTML template — all three crash with an
+    uncaught `UnicodeDecodeError`/`UnicodeEncodeError`, a real-traceback
+    hard crash, not an R5 "problem" (the file was read successfully; this
+    is a different failure mode R5 was never written to catch).
+  - **Python 3.14.9** (verified via a real Docker `python:3.14-slim`
+    fixture, the same image CI uses): `os.listdir()` instead decodes with
+    the `surrogateescape` error handler (PEP 383), producing a `str`
+    that holds a lone surrogate code point. `json.dumps()`'s default
+    `ensure_ascii=True` tolerated this (it emits a literal ASCII escape,
+    never actually encoding the surrogate) — which is why an earlier,
+    narrower manual test of JSON output only looked clean and nearly
+    became the final answer. Re-testing text-mode and `--html` output
+    specifically (not just JSON) surfaced the real, parallel crash:
+    `click.echo()` and the HTML file write both have to actually encode
+    the string as UTF-8 to produce bytes for a stream, and a lone
+    surrogate cannot be UTF-8-encoded — `UnicodeEncodeError`, caught only
+    because the new test in `tests/test_cli.py` exercises all three
+    output formats against the same fixture, not just one.
+
+  Fixed with one helper, `py2scan/encoding.py:safe_text`, applied only at
+  display/serialization boundaries, never to the value scanner.py uses to
+  actually re-open a file (`Finding.file` itself stays the raw,
+  disk-accurate value throughout, since `report.py:render_html`'s
+  `source_line()` needs it to reopen the file for the HTML report's code
+  snippet) — `safe_text` is called on a copy only in `Finding.to_dict()`,
+  `report.summarize()`'s problems list, `render_html()`'s per-file
+  heading, and `cli.py`'s text-mode finding/problem lines. On Python 2,
+  it decodes raw bytes as UTF-8, falling back to `'replace'` (→ U+FFFD)
+  on failure; on Python 3, it round-trips through a UTF-8 encode/decode
+  with `'replace'` specifically to catch and clean up lone surrogates,
+  since Python 3's `str` can already hold ones that aren't safe to
+  encode. Net effect: output is now not just crash-free but *identical*
+  across both interpreters for this case (both show the same U+FFFD),
+  which the straddle's own byte-identical-JSON goal did not originally
+  ask for but turns out to fall out of the fix for free.
+
+  2 new tests, one per crash site: `tests/test_scanner.py:
+  test_bad_byte_filename_is_scanned_and_stays_safe_to_serialize` (the
+  scan itself works, `to_dict()` never raises) and `tests/test_cli.py:
+  test_scan_handles_a_bad_byte_filename_in_every_format` (all three
+  output formats, end to end, on the real CLI — this second test is what
+  caught the Python 3 surrogate crash the first fix attempt missed, since
+  an earlier, narrower manual check had only tried JSON output). Both
+  skip (not xfail, not hard-coded to a platform name) if the host
+  filesystem itself refuses to create the fixture — confirmed to happen
+  on macOS (HFS+/APFS enforce valid UTF-8 filenames; this is genuinely
+  impossible to reproduce there), via a real `OSError` caught at fixture
+  creation, not a platform-name guess.
+
+  Full suite after the fix: `117 passed, 2 skipped` on 2.7.18 (Docker,
+  root); `112 passed, 7 skipped` on 3.14.7 (the 2 new tests skip here —
+  this is the Mac host); `112 passed, 7 skipped` on 3.14.9 (Docker
+  `python:3.14-slim`, matching CI — the 2 new tests pass here, on Linux).
+  flake8 `--max-complexity 10` clean on 2.7.18 and 3.14.7.
+
+  Everything else in the sweep checked clean against py2scan's own
+  footprint, with the specific reasoning recorded so "checked, 0 hits"
+  isn't just asserted: `tokenize.generate_tokens`→`tokenize.tokenize`
+  split (3.0, bytes-mode) — already handled, predates this sweep
+  (`scanner.py:_tokenize`); implicit trailing `NEWLINE` token (3.8) — no
+  rule inspects `NEWLINE`; PEP 701 `STRING`→`FSTRING_START/MIDDLE/END`
+  split (3.12) — no rule inspects `STRING`, and f-strings can appear in
+  neither py2scan's own straddle-compatible source nor the Python-2-only
+  code it scans; `json.loads(encoding=...)` removed (3.9) — py2scan only
+  calls `json.dumps`; `sys.getcheckinterval`/`setcheckinterval`/
+  `callstats`/`getcounts` removed (3.9) — none called; `collections`'s
+  deprecated ABC aliases removed (3.10) — py2scan only uses
+  `collections.Counter`/`OrderedDict`, never an ABC alias;
+  `concurrent.futures`/asyncio restriction (3.11) — py2scan uses
+  `ProcessPoolExecutor.map` directly, no asyncio involved; `functools`
+  changes (3.2, 3.3) — all additions (`lru_cache`, `wraps`,
+  `total_ordering`), no change to `functools.partial`, the only thing
+  py2scan calls; `io.BytesIO` — zero Removed/Deprecated/behavior-change
+  mentions across all 15 pages; `os.stat`/`stat.S_ISDIR`/`S_ISREG` —
+  changes found (3.3, 3.7, 3.8, 3.12) are all about `st_mode`/`st_ctime`
+  precision and symlink traversal detail, not about the two `S_IS*`
+  predicates py2scan actually calls; `token.h` C header removed (3.12) —
+  C API only, py2scan is pure Python.
 
 **Open defect against item 2b (not an accepted divergence — flagged by
 AutoSteer trigger T12, corrected 2026-10-22; claims re-verified after T10
@@ -554,8 +658,8 @@ any other process (no pickle, cache, queue, or database).
 | 2.7→3.14 | `tokenize` no longer lexes a trailing `L`/`l` suffix as part of a `NUMBER` token | empirical, this session, both interpreters | ran `check_long_suffix`'s pattern against real tokenizer output on 2.7.18 and 3.14.7 | 1 (`py2scan/rules.py:check_long_suffix`) |
 | 2.7→3.14 | dict literal iteration order: hash-bucket order (2.7) vs guaranteed insertion order (3.7+, [What's New in Python 3.7](https://docs.python.org/3/whatsnew/3.7.html#summary-release-highlights)) | ran `Finding.to_dict()` and `report.summarize()`'s output through `json.dumps` on both interpreters, byte-diffed | 2 (`Finding.to_dict()`, `report.summarize()`'s `rules` dict) |
 | 2.7→3.14 | `round()` half-to-even change, `/` float division, `.sort(cmp=...)` removed, lazy `map`/`filter`/`zip`, implicit relative imports, renamed-stdlib-module `try/except ImportError` fallbacks | [Porting Python 2 Code to Python 3](https://docs.python.org/3/howto/pyporting.html) + this skill's own "What tools miss" list | grepped `py2scan/*.py` for `round(`, `\bmap(\|\bfilter(\|\bzip(`, `\.sort(cmp`, bare `import`, `ImportError`, and the full stdlib-rename list | 0 — py2scan's own code already uses `from __future__ import division` (in `report.py`), `.sort(key=...)` only, no bare `map/filter/zip` on anything iterated twice (the one `map(` hit is `ProcessPoolExecutor.map`, consumed once, unrelated), no implicit relative imports, no `try/except ImportError` fallback pattern |
-| 3.0–3.14 Porting/Removed sections, full sweep | not yet done | [What's New](https://docs.python.org/3/whatsnew/) index, every version 3.0–3.14 | not yet run | pending — flagged so it isn't silently treated as "checked, 0 hits"; the items above are the ones I had independent reason to suspect and verified, not a systematic full-index sweep yet |
-| R6 version matrix (3.6–3.15) | per-rule version applicability | pending, one primary source + one real-interpreter test per rule per relevant version | not started | pending |
+| 3.0–3.14 Porting/Removed sections, full sweep | done, this session | [What's New](https://docs.python.org/3/whatsnew/) index, every version 3.0–3.14, fetched and grepped against py2scan's own exact stdlib footprint | `curl` each page, strip tags, grep against `json`/`sys`/`io`/`collections`/`os`/`ast`/`functools`/`platform`/`stat`/`tokenize`/`concurrent.futures`/`re` and the exact attributes py2scan calls on each | 1 genuine, previously-undiscovered defect found and fixed (`os.listdir` raw-bytes/surrogateescape filenames crashing output on both interpreters, two different ways) — see Blockers, Resolved; everything else checked clean with reasoning recorded, not just asserted |
+| R6 version matrix (3.6–3.15) | per-rule version applicability | one primary source + one real-interpreter test per rule per relevant version | done, this session (R6–R10) | implemented — see Blockers, Resolved (`STDLIB_REMOVED_SINCE`, `BUILTIN_NAMES`, `Finding.versions`) |
 
 ## Evidence
 | Date | Commit | Unit | Step | Level | Command | Result |

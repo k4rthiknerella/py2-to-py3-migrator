@@ -280,3 +280,31 @@ def test_version_invariant_finding_gets_the_full_judged_set():
     assert problem is None
     assert len(findings) == 1
     assert findings[0].versions == ("3.9", "3.12")
+
+
+def test_bad_byte_filename_is_scanned_and_stays_safe_to_serialize():
+    # A legacy-encoded filename (common in older codebases) is an arbitrary
+    # byte string on a POSIX filesystem. Python 2's os.listdir returns it
+    # untouched with no decoding at all, so Finding.file can end up holding
+    # bytes that aren't valid UTF-8; Python 3's os.listdir already
+    # surrogate-escapes instead. Without Finding.to_dict()'s safe_text
+    # call, this used to crash json.dumps on Python 2 even though the file
+    # itself was always scanned correctly - only the output step crashed.
+    root = tempfile.mkdtemp()
+    try:
+        if sys.version_info[0] >= 3:
+            bad_path = os.path.join(root.encode("utf-8"), b"bad_\xff_name.py")
+        else:
+            bad_path = os.path.join(root, "bad_\xff_name.py")
+        try:
+            with open(bad_path, "wb") as f:
+                f.write(b"x = unicode('hi')\n")
+        except (OSError, IOError):
+            pytest.skip("filesystem rejects an invalid-UTF-8 byte in a name")
+        files, findings, problems = scan(root, jobs=1)
+    finally:
+        shutil.rmtree(root)
+    assert problems == []
+    assert len(files) == 1
+    assert len(findings) == 1
+    findings[0].to_dict()  # must never raise, on either interpreter

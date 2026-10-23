@@ -7,6 +7,7 @@ import io
 import click
 
 from py2scan.config import load_config
+from py2scan.encoding import safe_text
 from py2scan.report import render_html, summarize
 from py2scan.rules import ALL_TARGET_VERSIONS
 from py2scan.scanner import scan
@@ -66,10 +67,11 @@ def scan_cmd(path, output_format, config_path, jobs, html_path,
     else:
         for f in findings:
             click.echo(u"%s:%d: %s %s [%s]" % (
-                f.file, f.line, f.rule, f.message,
+                safe_text(f.file), f.line, f.rule, f.message,
                 ", ".join(f.versions or ())))
         for path_, reason in problems:
-            click.echo(u"%s: could not be read: %s" % (path_, reason))
+            click.echo(u"%s: could not be read: %s" % (
+                safe_text(path_), reason))
         click.echo(u"%d files, %d findings" % (len(files), len(findings)))
         for version in sorted(judged_versions, key=_version_sort_key):
             click.echo(u"readiness for Python %s: %.1f%%"
