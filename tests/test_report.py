@@ -9,28 +9,41 @@ from py2scan.report import render_html, summarize
 
 
 def test_no_files_is_fully_ready():
+    # R6: readiness is per judged Python 3 version, not one scalar - a
+    # file can be ready for 3.9 while still blocked on 3.12.
     summary = summarize([], [])
     assert summary["files"] == 0
-    assert summary["readiness"] == 100.0
+    assert set(summary["readiness"].values()) == {100.0}
     assert summary["rules"] == {}
     assert summary["findings"] == []
 
 
 def test_clean_files_are_fully_ready():
     summary = summarize(["a.py", "b.py"], [])
-    assert summary["readiness"] == 100.0
+    assert set(summary["readiness"].values()) == {100.0}
 
 
 def test_readiness_counts_files_without_a_blocker():
+    # A Finding built directly with no versions= applies to every judged
+    # version (summarize's documented None-means-universal fallback).
     findings = [Finding("a.py", 1, "PY3-PRINT", "blocker", "x")]
     summary = summarize(["a.py", "b.py"], findings)
-    assert summary["readiness"] == 50.0
+    assert set(summary["readiness"].values()) == {50.0}
 
 
 def test_a_warning_does_not_affect_readiness():
     findings = [Finding("a.py", 1, "PY3-DIVISION", "warning", "x")]
     summary = summarize(["a.py", "b.py"], findings)
-    assert summary["readiness"] == 100.0
+    assert set(summary["readiness"].values()) == {100.0}
+
+
+def test_readiness_only_counts_versions_a_finding_applies_to():
+    findings = [Finding("a.py", 1, "PY3-STDLIB", "blocker", "x",
+                        versions=("3.12", "3.13"))]
+    summary = summarize(["a.py", "b.py"], findings,
+                        judged_versions=("3.9", "3.12"))
+    assert summary["readiness"]["3.9"] == 100.0
+    assert summary["readiness"]["3.12"] == 50.0
 
 
 def test_rules_counts_only_include_rules_with_findings():

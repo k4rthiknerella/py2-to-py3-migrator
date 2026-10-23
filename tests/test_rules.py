@@ -325,6 +325,33 @@ def test_relative_import_of_a_colliding_local_name_is_not_found():
     assert rules(check_stdlib_import, "from .urllib2 import Request\n") == []
 
 
+def test_version_dependent_removal_is_not_found_before_its_version():
+    # R6/R8: distutils isn't removed until Python 3.12 - judging only
+    # against 3.9 (where it still works) must not report it.
+    tree = ast.parse("import distutils\n")
+    findings = list(check_stdlib_import("m.py", tree, ("3.9",)))
+    assert findings == []
+
+
+def test_version_dependent_removal_is_scoped_to_its_own_versions():
+    # Judging against both 3.9 (still works) and 3.12 (removed): the
+    # finding fires, but its versions only cover 3.12, not 3.9.
+    tree = ast.parse("import distutils\n")
+    findings = list(check_stdlib_import("m.py", tree, ("3.9", "3.12")))
+    assert len(findings) == 1
+    assert findings[0].versions == ("3.12",)
+
+
+def test_boundary_removal_applies_to_every_judged_version():
+    # urllib2 was removed at the 2-vs-3 boundary (long before 3.6, R6's
+    # oldest judged version) - it applies to every version judged,
+    # whatever subset that is.
+    tree = ast.parse("import urllib2\n")
+    findings = list(check_stdlib_import("m.py", tree, ("3.9", "3.12")))
+    assert len(findings) == 1
+    assert findings[0].versions == ("3.9", "3.12")
+
+
 def severities(fn, source):
     return [(f.rule, f.severity) for f in fn("m.py", ast.parse(source))]
 

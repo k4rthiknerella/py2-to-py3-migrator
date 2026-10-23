@@ -62,7 +62,7 @@ def test_scan_format_json():
         shutil.rmtree(root)
     payload = json.loads(result.output)
     assert payload["files"] == 2
-    assert payload["readiness"] == 50.0
+    assert set(payload["readiness"].values()) == {50.0}
     assert payload["rules"] == {"PY3-BUILTIN": 1}
     assert payload["findings"][0]["file"] == "pkg/a.py"
 
@@ -141,5 +141,49 @@ def test_scan_config_disables_a_rule():
         shutil.rmtree(root)
     payload = json.loads(result.output)
     assert payload["rules"] == {}
-    assert payload["readiness"] == 100.0
+    assert set(payload["readiness"].values()) == {100.0}
     assert result.exit_code == 0
+
+
+def test_scan_target_version_scopes_readiness_and_findings():
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "a.py"), "wb") as f:
+            f.write(b"import distutils\n")
+        result = CliRunner().invoke(main, [
+            "scan", "--format", "json",
+            "--target-version", "3.9,3.12", root])
+    finally:
+        shutil.rmtree(root)
+    payload = json.loads(result.output)
+    assert sorted(payload["readiness"]) == ["3.12", "3.9"]
+    assert payload["readiness"]["3.9"] == 100.0
+    assert payload["readiness"]["3.12"] == 0.0
+    assert payload["findings"][0]["versions"] == ["3.12"]
+
+
+def test_scan_target_version_rejects_an_unknown_version():
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "a.py"), "wb") as f:
+            f.write(b"x = 1\n")
+        result = CliRunner().invoke(
+            main, ["scan", "--target-version", "3.99", root])
+    finally:
+        shutil.rmtree(root)
+    assert result.exit_code != 0
+    assert "unknown target version" in result.output
+
+
+def test_scan_target_version_defaults_to_all():
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "a.py"), "wb") as f:
+            f.write(b"x = 1\n")
+        result = CliRunner().invoke(main, ["scan", "--format", "json", root])
+    finally:
+        shutil.rmtree(root)
+    payload = json.loads(result.output)
+    assert sorted(payload["readiness"]) == [
+        "3.10", "3.11", "3.12", "3.13", "3.14", "3.15", "3.6", "3.7",
+        "3.8", "3.9"]

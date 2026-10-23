@@ -112,19 +112,86 @@ def check_division(path, tree):
                           "__future__ import division")
 
 
+# R6: every version py2scan can judge readiness against. R10 found this
+# set to be version-invariant (see BUILTIN_NAMES below); R8's stdlib set
+# genuinely varies by version (see STDLIB_REMOVED_SINCE).
+ALL_TARGET_VERSIONS = (
+    "3.6", "3.7", "3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.14",
+    "3.15",
+)
+
+# R10: every name in Python 2.7's __builtin__ missing from a judged
+# version's builtins. Derived by diffing 2.7.18's __builtin__ against
+# builtins on 9 real, final-release interpreters spanning the whole R6
+# range (3.6.15, 3.7.17, 3.8.20, 3.9.25, 3.10.19, 3.11.14, 3.12.12,
+# 3.13.12, 3.14.7) plus 3.15.1 for 3.15 - see MIGRATION.md's R10 evidence.
+# The missing set is identical across all 10: no per-version table is
+# needed here, unlike STDLIB_REMOVED_SINCE below.
 BUILTIN_NAMES = frozenset([
     "unicode", "basestring", "long", "xrange", "raw_input", "unichr",
     "execfile", "reduce", "file", "cmp", "reload", "apply", "buffer",
     "intern", "coerce", "StandardError",
 ])
 
-STDLIB_MODULES = frozenset([
-    "urllib2", "urlparse", "ConfigParser", "Queue", "cPickle", "cStringIO",
-    "StringIO", "httplib", "HTMLParser", "commands", "SocketServer",
-    "Tkinter", "__builtin__", "copy_reg", "xmlrpclib", "thread", "Cookie",
-    "cookielib", "BaseHTTPServer", "SimpleHTTPServer", "htmlentitydefs",
-    "md5", "sha", "sets", "UserDict",
-])
+# R8: every top-level Python 2.7 stdlib module missing from a judged
+# version, keyed by the earliest judged version it's missing from.
+# Derived the same way as BUILTIN_NAMES above, against the same 10
+# interpreters - see MIGRATION.md's R8 evidence for the full receipt.
+# Confirmed monotonic: nothing removed ever reappears in a later version.
+# "3.6" means removed at the 2-vs-3 boundary, before R6's judged range
+# even starts - true unconditionally for every version R6 can judge.
+# cPickle/cStringIO/__builtin__ were confirmed removed-by-3.6 the same
+# empirical way; Tkinter is sourced from the Python 3.0 porting guide
+# instead, because the test images used have no system Tcl/Tk library,
+# so Tkinter fails to import on 2.7 too, for an unrelated environment
+# reason - not a usable receipt either way.
+STDLIB_REMOVED_SINCE = {
+    "BaseHTTPServer": "3.6", "Bastion": "3.6", "CGIHTTPServer": "3.6",
+    "ConfigParser": "3.6", "Cookie": "3.6", "DocXMLRPCServer": "3.6",
+    "HTMLParser": "3.6", "MimeWriter": "3.6", "Queue": "3.6",
+    "SimpleHTTPServer": "3.6", "SimpleXMLRPCServer": "3.6",
+    "SocketServer": "3.6", "StringIO": "3.6", "Tkinter": "3.6",
+    "UserDict": "3.6", "UserList": "3.6", "UserString": "3.6",
+    "__builtin__": "3.6", "anydbm": "3.6", "audiodev": "3.6",
+    "bsddb": "3.6", "cPickle": "3.6", "cStringIO": "3.6",
+    "commands": "3.6", "compiler": "3.6", "cookielib": "3.6",
+    "copy_reg": "3.6", "dbhash": "3.6", "dircache": "3.6",
+    "dumbdbm": "3.6", "dummy_thread": "3.6", "exceptions": "3.6",
+    "fpformat": "3.6", "hotshot": "3.6", "htmlentitydefs": "3.6",
+    "htmllib": "3.6", "httplib": "3.6", "ihooks": "3.6", "imputil": "3.6",
+    "markupbase": "3.6", "md5": "3.6", "mhlib": "3.6", "mimetools": "3.6",
+    "mimify": "3.6", "multifile": "3.6", "mutex": "3.6", "new": "3.6",
+    "os2emxpath": "3.6", "popen2": "3.6", "posixfile": "3.6",
+    "repr": "3.6", "rexec": "3.6", "rfc822": "3.6", "robotparser": "3.6",
+    "sets": "3.6", "sgmllib": "3.6", "sha": "3.6", "sre": "3.6",
+    "statvfs": "3.6", "stringold": "3.6", "sunaudio": "3.6",
+    "thread": "3.6", "toaiff": "3.6", "urllib2": "3.6", "urlparse": "3.6",
+    "user": "3.6", "whichdb": "3.6", "xmllib": "3.6", "xmlrpclib": "3.6",
+    "macurl2path": "3.7",
+    "macpath": "3.8",
+    "dummy_threading": "3.9",
+    "formatter": "3.10", "symbol": "3.10",
+    "binhex": "3.11",
+    "asynchat": "3.12", "asyncore": "3.12", "distutils": "3.12",
+    "imp": "3.12", "smtpd": "3.12",
+    "aifc": "3.13", "cgi": "3.13", "cgitb": "3.13", "chunk": "3.13",
+    "imghdr": "3.13", "lib2to3": "3.13", "mailcap": "3.13",
+    "nntplib": "3.13", "pipes": "3.13", "sndhdr": "3.13", "sunau": "3.13",
+    "telnetlib": "3.13", "uu": "3.13", "xdrlib": "3.13",
+    "sre_compile": "3.15", "sre_constants": "3.15", "sre_parse": "3.15",
+}
+
+
+def _version_tuple(version):
+    return tuple(int(part) for part in version.split("."))
+
+
+def _applicable_versions(removed_since, judged_versions):
+    """The subset of judged_versions a removed-as-of-removed_since fact
+    applies to - R6's "per-file/per-blocker version applicability"."""
+    floor = _version_tuple(removed_since)
+    return tuple(v for v in judged_versions if _version_tuple(v) >= floor)
+
 
 _BINDING_CONTEXTS = (ast.Store, ast.Param, ast.Del)
 
@@ -373,28 +440,47 @@ def _import_error_guarded_imports(tree):
     return guarded
 
 
-def check_stdlib_import(path, tree):
+def _stdlib_import_finding(path, lineno, name, severity, judged_versions):
+    removed_since = STDLIB_REMOVED_SINCE.get(name)
+    if removed_since is None:
+        return None
+    applicable = _applicable_versions(removed_since, judged_versions)
+    if not applicable:
+        return None
+    return Finding(
+        path, lineno, "PY3-STDLIB", severity,
+        "import of %s; removed on Python %s" % (name, removed_since),
+        versions=applicable)
+
+
+def check_stdlib_import(path, tree, judged_versions=ALL_TARGET_VERSIONS):
     guarded = _import_error_guarded_imports(tree)
     for node in _nodes(tree, ast.Import):
         severity = "warning" if id(node) in guarded else "blocker"
         for alias in node.names:
-            if alias.name in STDLIB_MODULES:
-                yield Finding(
-                    path, node.lineno, "PY3-STDLIB", severity,
-                    "import of %s; renamed or removed on Python 3"
-                    % alias.name)
+            finding = _stdlib_import_finding(
+                path, node.lineno, alias.name, severity, judged_versions)
+            if finding is not None:
+                yield finding
     for node in _nodes(tree, ast.ImportFrom):
-        if node.level == 0 and node.module in STDLIB_MODULES:
+        if node.level == 0:
             severity = "warning" if id(node) in guarded else "blocker"
-            yield Finding(
-                path, node.lineno, "PY3-STDLIB", severity,
-                "import of %s; renamed or removed on Python 3"
-                % node.module)
+            finding = _stdlib_import_finding(
+                path, node.lineno, node.module, severity, judged_versions)
+            if finding is not None:
+                yield finding
 
 
 AST_RULES = [check_print, check_exec, check_backtick, check_raise_comma,
              check_dict_iter, check_metaclass, check_division,
-             check_builtin_use, check_stdlib_import]
+             check_builtin_use]
+
+# R6: rules whose applicable-versions subset depends on which versions a
+# scan judges, so scanner.scan_file passes judged_versions to these (and
+# only these) explicitly, rather than relying on the ALL_TARGET_VERSIONS
+# default above (which exists only so tests can call this rule directly
+# with the old 2-argument form).
+VERSION_AWARE_AST_RULES = [check_stdlib_import]
 
 
 def check_ne_op(path, tokens):

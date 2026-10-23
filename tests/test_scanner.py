@@ -237,3 +237,46 @@ def test_non_regular_entry_is_a_problem_not_a_crash():
         shutil.rmtree(root)
     assert files == ["ok.py"]
     assert problems == [("pipe.py", "not a regular file or directory")]
+
+
+def test_judged_versions_scopes_a_version_dependent_finding():
+    # R6: distutils is only removed as of Python 3.12 - scanning with a
+    # narrower judged_versions must not report it at all.
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "m.py"), "wb") as f:
+            f.write(b"import distutils\n")
+        findings, problem = scan_file(root, "m.py", ("3.9",))
+    finally:
+        shutil.rmtree(root)
+    assert problem is None
+    assert findings == []
+
+
+def test_judged_versions_default_covers_the_full_range():
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "m.py"), "wb") as f:
+            f.write(b"import distutils\n")
+        findings, problem = scan_file(root, "m.py")
+    finally:
+        shutil.rmtree(root)
+    assert problem is None
+    assert len(findings) == 1
+    assert findings[0].versions == ("3.12", "3.13", "3.14", "3.15")
+
+
+def test_version_invariant_finding_gets_the_full_judged_set():
+    # print is Python-2-only syntax - it's a blocker on every Python 3
+    # version uniformly, so scan_file fills in the whole judged set,
+    # not just a subset like check_stdlib_import computes for itself.
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "m.py"), "wb") as f:
+            f.write(b"print 'hi'\n")
+        findings, problem = scan_file(root, "m.py", ("3.9", "3.12"))
+    finally:
+        shutil.rmtree(root)
+    assert problem is None
+    assert len(findings) == 1
+    assert findings[0].versions == ("3.9", "3.12")

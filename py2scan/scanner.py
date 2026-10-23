@@ -12,7 +12,9 @@ from concurrent.futures import ProcessPoolExecutor
 
 from py2scan import config as config_module
 from py2scan.findings import Finding
-from py2scan.rules import AST_RULES, TOKEN_RULES
+from py2scan.rules import (
+    ALL_TARGET_VERSIONS, AST_RULES, TOKEN_RULES, VERSION_AWARE_AST_RULES,
+)
 
 
 def _tokenize(source):
@@ -76,9 +78,14 @@ def iter_py_files(root):
     return files, problems
 
 
-def scan_file(root, rel):
+def scan_file(root, rel, judged_versions=ALL_TARGET_VERSIONS):
     """(findings, problem): problem is None, or the reason rel couldn't
-    be read (R5) - in which case findings is always []."""
+    be read (R5) - in which case findings is always []. judged_versions
+    (R6) is the set of Python 3 versions readiness is judged against;
+    every finding ends up with a .versions subset of it - set by the
+    rule itself for version-dependent rules (VERSION_AWARE_AST_RULES),
+    or filled in here with the full judged_versions for every other
+    rule, whose applicability doesn't vary by version."""
     try:
         with open(os.path.join(root, rel), "rb") as f:
             source = f.read()
@@ -87,19 +94,25 @@ def scan_file(root, rel):
     try:
         tree = ast.parse(source, rel)
     except SyntaxError as e:
-        return [Finding(rel, e.lineno or 1, "PY3-PARSE", "blocker",
-                        "does not parse under Python %s: %s"
-                        % (platform.python_version(), e.msg))], None
-    tokens = _tokenize(source)
-    findings = []
-    for rule in AST_RULES:
-        findings.extend(rule(rel, tree))
-    for rule in TOKEN_RULES:
-        findings.extend(rule(rel, tokens))
+        findings = [Finding(rel, e.lineno or 1, "PY3-PARSE", "blocker",
+                            "does not parse under Python %s: %s"
+                            % (platform.python_version(), e.msg))]
+    else:
+        tokens = _tokenize(source)
+        findings = []
+        for rule in AST_RULES:
+            findings.extend(rule(rel, tree))
+        for rule in VERSION_AWARE_AST_RULES:
+            findings.extend(rule(rel, tree, judged_versions))
+        for rule in TOKEN_RULES:
+            findings.extend(rule(rel, tokens))
+    for finding in findings:
+        if finding.versions is None:
+            finding.versions = judged_versions
     return findings, None
 
 
-def scan(root, jobs=4, config=None):
+def scan(root, jobs=4, config=None, judged_versions=ALL_TARGET_VERSIONS):
     """(files, findings, problems): problems (R5) is every entry under
     root that couldn't be scanned, each as (relpath, reason) - from
     walking the tree (an unreadable directory, or a non-file/non-dir
@@ -109,7 +122,8 @@ def scan(root, jobs=4, config=None):
     if files:
         executor = ProcessPoolExecutor(max_workers=jobs)
         try:
-            worker = functools.partial(scan_file, root)
+            worker = functools.partial(
+                scan_file, root, judged_versions=judged_versions)
             for rel, (file_findings, problem) in zip(
                     files, executor.map(worker, files)):
                 findings.extend(file_findings)

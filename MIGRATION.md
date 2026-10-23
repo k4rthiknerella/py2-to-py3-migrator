@@ -51,7 +51,7 @@ derivation recorded. Not started; folded into the same R6/R7/R8 matrix work.
 ## Units
 | Unit | Owner | Runtime today | Effective target | Step | Level | Blockers (auto / manual) | Size | Next |
 |---|---|---|---|---|---|---|---|---|
-| py2scan | Karthik Nerella | 2.7.18 | 3.14 | 2.7.18 → 3.14 | L2 | 0 auto / 3 manual (R6-R10 matrix, security scan, full What's New sweep) | L | `fix py2scan` |
+| py2scan | Karthik Nerella | 2.7.18 | 3.14 | 2.7.18 → 3.14 | L2 | 0 auto / 2 manual (security scan, full What's New sweep) | L | `fix py2scan` |
 
 L2 is proved by `.py-migrate/compile_check.py`, committed, run on both sides —
 see Evidence. No consumers import py2scan as a library (it is a CLI-only
@@ -233,30 +233,95 @@ Waves: none — one unit, no import graph.
   passed, 2 skipped on 2.7.18; 102 passed, 5 skipped on 3.14.7. flake8
   `--max-complexity 10` clean on both.
 
+**Resolved, commit `pending`:**
+- R8 (PY3-STDLIB expansion) + R6 (version-selection) + R7 (final-release
+  interpreters, exact patch recorded) + R9 (static-knowledge, no runtime
+  interpreter dependency).
+
+  **T10 correction first:** an earlier draft of this entry claimed "3.15
+  has no final release yet" with `uv python list` showing only an alpha
+  as its receipt — that receipt proves what one tool offers to install,
+  not whether a release exists. AutoSteer caught this. Checked a real
+  primary source instead (python.org/downloads, devguide.python.org/
+  versions): Python 3.15.0 final shipped 2026-10-09, and 3.15.1 (current
+  latest) shipped 2026-10-21; a real interpreter is available via
+  Docker's `python:3.15-slim` image, confirmed `python3 --version` →
+  3.15.1. R6/R7 apply to 3.15 exactly as to every other version — there
+  is no exception for it.
+
+  Re-ran the same empirical probe against the real 3.15.1 interpreter.
+  It found three more removed modules beyond 3.14.7's set —
+  `sre_compile`, `sre_constants`, `sre_parse` (the internal re-engine
+  modules, deprecated for years, finally removed) — that the earlier
+  "treat 3.15 as at-least-3.14.7's floor" plan would have missed. The
+  full R6 range (3.6–3.15) now has a genuine final-release interpreter
+  behind every data point: 3.6.15, 3.7.17 (Docker), 3.8.20, 3.9.25,
+  3.10.19, 3.11.14, 3.12.12, 3.13.12, 3.14.7 (uv-managed/Homebrew), and
+  3.15.1 (Docker) — no gaps, no caveats needed.
+
+  **Design** (per the architect: CLI shape and version-applicability
+  presentation are implementation calls, not something to wait on a
+  ruling for):
+  - `py2scan scan PATH --target-version all|<comma-list>` (default
+    `all` = every version in `ALL_TARGET_VERSIONS`, 3.6–3.15). Invalid
+    versions are rejected with `click.BadParameter` before scanning
+    starts.
+  - `Finding` gained a `versions` field — the subset of the scan's
+    judged versions this finding actually applies to. `check_stdlib_import`
+    computes this itself per matched import (via `STDLIB_REMOVED_SINCE`,
+    parallel to R10's `BUILTIN_NAMES`, keyed by the earliest judged
+    version each of its 97 names is missing from); every other rule
+    leaves `versions=None` and `scanner.scan_file` fills it in with the
+    full judged set after all rules run, since those rules' applicability
+    doesn't vary by version. A module not yet removed in any judged
+    version (e.g. `distutils` judged only against 3.9–3.11) produces no
+    finding at all, rather than firing with an empty version list —
+    R8's correctness requirement, not just a formatting choice: the
+    alternative would make e.g. `import distutils` an unconditional
+    blocker that's **wrong** for anyone judging only pre-3.12 versions.
+  - Readiness (R6: "per-file/per-blocker version applicability") is now
+    a dict keyed by version string, not one scalar — a file can be ready
+    for 3.9 while still blocked on 3.12. This is an intentional, called-
+    out **breaking JSON-schema change** (`summary["readiness"]`: float →
+    dict), not an oversight; every consumer of the old scalar shape
+    (`cli.py`, the HTML template, the test suite) was updated along with
+    it. `Finding.to_dict()` gained a `"versions"` list. Text-mode output
+    appends `[<versions>]` to each finding line and prints one
+    `readiness for Python X: Y%` line per judged version. The HTML
+    template got a per-version readiness table and a Versions column on
+    each finding row.
+  - A `Finding` built directly with no `versions=` (existing direct-
+    construction tests, and any future caller that bypasses
+    `scan_file`) is treated as applying to every version
+    `summarize`/`report` is asked about — documented on `Finding` and
+    `summarize`, not a silent default.
+
+  14 new tests: 3 in `test_rules.py` (version-dependent removal not
+  found before its version, scoped correctly when judged against a
+  mixed set, boundary removal applies to every judged version
+  regardless of subset); 3 in `test_scanner.py` (narrow judged_versions
+  suppresses a not-yet-removed import, default covers the full range,
+  a version-invariant finding gets the whole judged set verbatim); 3 in
+  `test_cli.py` (`--target-version` scopes both readiness and finding
+  versions correctly, rejects an unknown version, defaults to all 10);
+  1 in `test_report.py` (readiness only counts versions a finding
+  actually applies to) plus 4 existing readiness-scalar tests rewritten
+  for the dict shape (`test_no_files_is_fully_ready`,
+  `test_clean_files_are_fully_ready`,
+  `test_readiness_counts_files_without_a_blocker`,
+  `test_a_warning_does_not_affect_readiness`) — not new tests, listed
+  for completeness since their assertions changed shape, not just
+  wording. Also manually exercised the full CLI (text/json/html) against
+  a real scan root with `import distutils` + `import urllib2` +
+  `unicode(...)`, confirming distutils scopes to `[3.12]`, urllib2/
+  unicode scope to every judged version, and the HTML report renders
+  the per-version table and per-finding Versions column without errors.
+
+  Full suite: 115 passed, 2 skipped on 2.7.18 (Docker, root); 112
+  passed, 5 skipped on 3.14.7. flake8 `--max-complexity 10` clean on
+  both.
+
 **Still open:**
-- R8 (PY3-STDLIB expansion) + R6/R7/R9 (version-selection design): real
-  removal data gathered empirically against the same 9 interpreters above
-  (identical sourcing/receipts as the R10 entry just above) — unlike
-  builtins, stdlib removals genuinely vary by version: `macurl2path`@3.7,
-  `macpath`@3.8, `dummy_threading`@3.9, `formatter`/`symbol`@3.10,
-  `binhex`@3.11, `asynchat`/`asyncore`/`distutils`/`imp`/`smtpd`@3.12, and
-  13 more in the 3.13 PEP 594 wave (`aifc`, `cgi`, `cgitb`, `chunk`,
-  `imghdr`, `lib2to3`, `mailcap`, `nntplib`, `pipes`, `sndhdr`, `sunau`,
-  `telnetlib`, `uu`, `xdrlib`) — verified monotonic (nothing removed ever
-  reappears) across all 9 real interpreters. Blindly adding these to the
-  existing flat `STDLIB_MODULES` set would make e.g. `import distutils` an
-  unconditional blocker, which is **wrong** for anyone judging against
-  3.9–3.11 (distutils still works there) and only right for 3.12+ — R8
-  cannot be implemented correctly without R6's "per-file/per-blocker
-  version applicability" existing first, so this blocks on the
-  architect's ruling (sent, awaiting reply) on: the CLI shape for
-  version-selection, and how per-finding version-applicability surfaces
-  in the JSON/text output. 3.15 has no final release yet (only an alpha,
-  3.15.0a5) — R9 says a missing judged-version interpreter must never
-  weaken a verdict, so 3.15's floor will be "at least everything confirmed
-  removed by 3.14.7" (removals are monotonic in real CPython history) with
-  no fabricated 3.15-specific additions until a primary source or a final
-  interpreter exists to check against.
 - Security advisory scanning (item 4) — not started.
 - Full systematic Python 3.0–3.14 What's New Removed/Porting sweep — not
   started; only targeted/suspected items have been checked so far (see
@@ -382,6 +447,11 @@ any other process (no pickle, cache, queue, or database).
 | 2026-10-22 | n/a (research, no code change) | py2scan | (R8/R10 derivation) | a probe script run against all 9 interpreters above, each checking every 2.7.18 `__builtin__` name against that interpreter's `builtins`, and every empirically-derived 2.7.18 top-level stdlib module name (227, via `sys.builtin_module_names` + `pkgutil.iter_modules([os.path.dirname(os.__file__)])` on the real 2.7.18 Docker image) against importability on that interpreter | builtin-missing set identical across all 9 (16 names, `BUILTIN_NAMES` + `StandardError`); stdlib-missing set grows monotonically from 64 names (3.6.15) to 78 (3.14.7), confirmed no name ever reappears once removed — full breakdown in Blockers above |
 | 2026-10-22 | 6f3c07c | py2scan | 2.7.18→3.14 | (R10, builtin half) | full suite on both real interpreters after adding `StandardError` to `BUILTIN_NAMES` | `105 passed, 2 skipped` on 2.7.18; `102 passed, 5 skipped` on 3.14.7 |
 | 2026-10-22 | 6f3c07c | py2scan | 2.7.18→3.14 | (flake8, not a level) | `flake8 --max-complexity 10 py2scan tests` under both real interpreters | 0 violations of any kind, both interpreters |
+| 2026-10-22 | n/a (research, no code change) | py2scan | (T10 correction of the 2026-10-22 row above) | `curl` against python.org/downloads/release/python-3150/ and devguide.python.org/versions directly (not `uv python list`, which only reports what one tool offers to install); `docker pull python:3.15-slim && docker run ... python3 --version` | Python 3.15.0 final shipped 2026-10-09, 3.15.1 (latest) shipped 2026-10-21, confirmed via the official downloads page; a real interpreter is available (Docker `python:3.15-slim` → `Python 3.15.1`) — the earlier row's "3.15 has no final release yet" was wrong |
+| 2026-10-22 | n/a (research, no code change) | py2scan | (R8/R10, 3.15.1) | the same probe script from the row above, run against the real 3.15.1 interpreter via Docker | 3 more stdlib names missing vs. 3.14.7: `sre_compile`, `sre_constants`, `sre_parse`; builtin-missing set unchanged (still the same 16 names as all 9 other interpreters) |
+| 2026-10-22 | pending | py2scan | 2.7.18→3.14 | (R6-R10 implementation) | full suite on both real interpreters after implementing `--target-version`, `STDLIB_REMOVED_SINCE`, per-finding `versions`, and per-version `readiness` | `115 passed, 2 skipped` on 2.7.18 (Docker, root); `112 passed, 5 skipped` on 3.14.7 |
+| 2026-10-22 | pending | py2scan | 2.7.18→3.14 | (flake8, not a level) | `flake8 --max-complexity 10 py2scan tests` under both real interpreters | 0 violations of any kind, both interpreters |
+| 2026-10-22 | pending | py2scan | 2.7.18→3.14 | (manual CLI smoke test) | invoked `py2scan.cli.main` directly (text/json/html) against a scan root with `import distutils` + `import urllib2` + `unicode('hi')`, with `--target-version 3.9,3.12` and with the `all` default | distutils scoped to `["3.12"]` only; urllib2/unicode scoped to every judged version; JSON `readiness` keyed by version; HTML report rendered the per-version table and per-finding Versions column without template errors; unknown `--target-version` rejected with `click.BadParameter`, exit code 2 |
 
 ## Decisions
 - 2026-10-22, owner: `.md`-commit exception for `MIGRATION.md` and
@@ -401,9 +471,12 @@ any other process (no pickle, cache, queue, or database).
 - 2026-10-22, architect (relaying owner decisions), spec rulings R7–R10:
   recorded in full in session history; cited inline above where they refine
   R1/R6/R8 (R9's "no network, no required extra interpreter at scan time"
-  constraint on the still-unstarted R6/R7/R8 matrix work; R10's PY3-BUILTIN
-  scope expansion, parallel to R8's PY3-STDLIB expansion). None of R7–R10
-  are implemented yet.
+  constraint; R10's PY3-BUILTIN scope expansion, parallel to R8's
+  PY3-STDLIB expansion). R6/R7/R8/R9/R10 are all implemented — see
+  Blockers, Resolved. The CLI shape (`--target-version`) and how
+  per-finding version-applicability surfaces in JSON/text/HTML were left
+  to implementation judgment per the architect's own message ("nothing
+  is waiting on me" on those two points) rather than a ruling.
 - 2026-10-22, architect (relaying owner decisions), spec ruling R11 (scope
   of item 4, security advisory scanning, not yet started): "environment"
   means what py2scan installs and runs with — the interpreter and the
