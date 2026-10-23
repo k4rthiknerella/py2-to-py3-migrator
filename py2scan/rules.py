@@ -163,18 +163,86 @@ def check_builtin_use(path, tree):
                           "%s; removed or changed on Python 3" % node.id)
 
 
+# Python 2.7's ast has separate TryExcept/TryFinally nodes; Python 3 unifies
+# them into one Try node with body/handlers/orelse/finalbody. Either way,
+# ExceptHandler itself (type/name/body) is the same shape on both versions.
+_TRY_TYPE = getattr(ast, "Try", None)
+_TRY_EXCEPT_TYPE = getattr(ast, "TryExcept", None)
+
+_FUNCTION_TYPES = tuple(t for t in (
+    ast.FunctionDef, ast.Lambda, getattr(ast, "AsyncFunctionDef", None),
+) if t is not None)
+
+# R2: a handler counts as "catches ImportError" if it's bare, or names one
+# of these (alone or in a tuple). StandardError is Python-2-only, but this
+# is a static text match against the except clause, not a live lookup.
+_IMPORT_ERROR_NAMES = frozenset([
+    "ImportError", "ModuleNotFoundError", "Exception", "BaseException",
+    "StandardError",
+])
+
+
+def _is_try_node(node):
+    return ((_TRY_TYPE is not None and isinstance(node, _TRY_TYPE))
+            or (_TRY_EXCEPT_TYPE is not None
+                and isinstance(node, _TRY_EXCEPT_TYPE)))
+
+
+def _handler_catches_import_error(handler):
+    if handler.type is None:
+        return True
+    types = (handler.type.elts if isinstance(handler.type, ast.Tuple)
+             else [handler.type])
+    return any(isinstance(t, ast.Name) and t.id in _IMPORT_ERROR_NAMES
+               for t in types)
+
+
+def _imports_in_blocks(stmt_lists):
+    """Import/ImportFrom nodes reachable from these statement lists without
+    descending into a nested function or lambda body - R2's "inside"."""
+    found = []
+    stack = [stmt for stmts in stmt_lists for stmt in stmts]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, _FUNCTION_TYPES):
+            continue
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            found.append(node)
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+    return found
+
+
+def _import_error_guarded_imports(tree):
+    """id()s of Import/ImportFrom nodes inside a try body or a handler body
+    (R2's "inside" - not else/finally) of a try with a handler that catches
+    ImportError (bare except, or one of _IMPORT_ERROR_NAMES)."""
+    guarded = set()
+    for node in ast.walk(tree):
+        if not _is_try_node(node):
+            continue
+        if not any(_handler_catches_import_error(h) for h in node.handlers):
+            continue
+        blocks = [node.body] + [h.body for h in node.handlers]
+        guarded.update(id(imp) for imp in _imports_in_blocks(blocks))
+    return guarded
+
+
 def check_stdlib_import(path, tree):
+    guarded = _import_error_guarded_imports(tree)
     for node in _nodes(tree, ast.Import):
+        severity = "warning" if id(node) in guarded else "blocker"
         for alias in node.names:
             if alias.name in STDLIB_MODULES:
                 yield Finding(
-                    path, node.lineno, "PY3-STDLIB", "blocker",
+                    path, node.lineno, "PY3-STDLIB", severity,
                     "import of %s; renamed or removed on Python 3"
                     % alias.name)
     for node in _nodes(tree, ast.ImportFrom):
         if node.level == 0 and node.module in STDLIB_MODULES:
+            severity = "warning" if id(node) in guarded else "blocker"
             yield Finding(
-                path, node.lineno, "PY3-STDLIB", "blocker",
+                path, node.lineno, "PY3-STDLIB", severity,
                 "import of %s; renamed or removed on Python 3"
                 % node.module)
 

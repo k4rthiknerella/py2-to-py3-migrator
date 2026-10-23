@@ -51,7 +51,7 @@ derivation recorded. Not started; folded into the same R6/R7/R8 matrix work.
 ## Units
 | Unit | Owner | Runtime today | Effective target | Step | Level | Blockers (auto / manual) | Size | Next |
 |---|---|---|---|---|---|---|---|---|
-| py2scan | Karthik Nerella | 2.7.18 | 3.14 | 2.7.18 → 3.14 | L2 | 0 auto / 6 manual (R2, R3, R5, R6-R10 matrix, security scan, full What's New sweep) | L | `fix py2scan` |
+| py2scan | Karthik Nerella | 2.7.18 | 3.14 | 2.7.18 → 3.14 | L2 | 0 auto / 5 manual (R3, R5, R6-R10 matrix, security scan, full What's New sweep) | L | `fix py2scan` |
 
 L2 is proved by `.py-migrate/compile_check.py`, committed, run on both sides —
 see Evidence. No consumers import py2scan as a library (it is a CLI-only
@@ -115,8 +115,26 @@ Waves: none — one unit, no import graph.
   wrapping only, no logic changes · verified `flake8 --max-complexity 10`
   clean (0 complexity, 0 line-length) on both real interpreters.
 
+**Resolved, commit (this one — see Evidence for the hash):**
+- R2: `py2scan/rules.py:check_stdlib_import` now checks whether the
+  matched `Import`/`ImportFrom` node is inside a `try` body or a handler
+  body (R2's "inside" — not else/finally, not a nested def/lambda) of a
+  `try` with a handler that catches `ImportError` (bare `except:`, or a
+  handler naming `ImportError`, `ModuleNotFoundError`, `Exception`,
+  `BaseException`, or `StandardError`, alone or in a tuple); if so, the
+  finding's severity is `warning` instead of `blocker`. Handles both
+  Python 2.7's separate `TryExcept`/`TryFinally` ast nodes and Python 3's
+  unified `Try` node via a version-guarded helper, matching the pattern
+  already used for `ast.arg`. 11 new tests in `test_rules.py` (bare-except,
+  named-handler, the fallback-import-in-the-handler-body case,
+  tuple-of-exceptions, `ModuleNotFoundError`, `StandardError`, and five
+  "still a blocker" negatives — unrelated except, try-else, try-finally,
+  nested-function, no enclosing try at all), passing on both real
+  interpreters (2.7.18 exercises `TryExcept`/`TryFinally`; 3.14.7 exercises
+  the unified `Try`). Count verified by `grep -c` against the file, not
+  recalled.
+
 **Still open:**
-- R2 (ImportError-guarded PY3-STDLIB → warning, not blocker) — not started.
 - R3 (PY3-BUILTIN scoping per Python 2.7's real compiler semantics,
   including `del` and bare `global`) — not started.
 - R5 (exit code 2 and incomplete-report marking for unreadable entries) —
@@ -132,21 +150,39 @@ Waves: none — one unit, no import graph.
   Breaking changes in scope).
 
 **Open defect against item 2b (not an accepted divergence — flagged by
-AutoSteer trigger T12, corrected 2026-10-22):** R1 states that when the
-never-blocker-free guarantee conflicts with byte-identical JSON across the
-two interpreters, the guarantee wins, and every such conflicting input must
-be recorded as a defect, with the input attached — explicitly *not* called
-an accepted divergence. An earlier version of this document and of code
-comments in `tests/test_rules.py`/`tests/test_scanner.py` wrongly called
-this "R1's accepted divergence"; that wording has been corrected (see
-commit history). The defect itself: for any of the 8 inputs below, `scan`
-reports a single `PY3-PARSE` blocker on the target and a different,
-granular blocker (with a different `rule` and `message`) on the source —
-the JSON is not byte-identical, and per R1 it stays that way, because
-`ast.Print`/`Exec`/`Repr` do not exist on Python 3's `ast` module and the
-syntax cannot reach `ast.parse` successfully there at all. This cannot be
-closed while straddling; it is open until flip (when there is no longer a
-2.7 side to diverge from). Inputs, each verified on both real interpreters:
+AutoSteer trigger T12, corrected 2026-10-22; claims re-verified after T10
+flagged two of them as receipt-free, corrected again same day):** R1
+states that when the never-blocker-free guarantee conflicts with
+byte-identical JSON across the two interpreters, the guarantee wins, and
+every such conflicting input must be recorded as a defect, with the input
+attached — explicitly *not* called an accepted divergence. An earlier
+version of this document and of code comments in
+`tests/test_rules.py`/`tests/test_scanner.py` wrongly called this "R1's
+accepted divergence"; corrected (see commit history).
+
+The defect itself: for any of the 7 inputs below, `scan` reports a single
+`PY3-PARSE` blocker on the target and a different, granular blocker (with
+a different `rule` and `message`) on the source — the JSON is not
+byte-identical. Why no code change on either side can close this while
+straddling: on the source, these 7 constructs are exactly what their rule
+exists to detect, so making the source side stop reporting them would gut
+the tool; on the target, `ast.Print`/`Exec`/`Repr` are verified absent from
+Python 3.14.7's `ast` module (`hasattr` → `False`) and `ast.parse` is
+verified to raise `SyntaxError` for each of the 7 inputs on that same
+interpreter (command: `python3.14 -c "import ast; ast.parse(<input>)"`,
+re-run for every input below as part of this correction) — Python 3's
+`ast.parse` cannot be made to produce a tree containing a node type its
+own `ast` module doesn't define, so the rule function can never run there
+for these inputs. That no-code-change-closes-this argument is the receipt;
+it is not itself a claim that flip removes the defect — item 2b's own
+wording scopes the comparison to "while straddling", so once there is no
+longer a second interpreter to diverge from, the comparison item 2b
+describes no longer has two sides to apply to. Whether that is actually
+how `cleanup`/`flip` end up treating it is undetermined and untested;
+flagging this rather than asserting it.
+
+Inputs, each verified against both real interpreters (2.7.18, 3.14.7) via
+`ast.parse` directly and via `scan_file` end-to-end:
   - `print x` (or any print statement) → `PY3-PRINT` (2.7) / `PY3-PARSE` (3.x)
   - `exec 'x = 1'` → `PY3-EXEC-STMT` (2.7) / `PY3-PARSE` (3.x)
   - `` `x` `` (backtick) → `PY3-BACKTICK` (2.7) / `PY3-PARSE` (3.x)
@@ -154,12 +190,19 @@ closed while straddling; it is open until flip (when there is no longer a
   - `x <> y` → `PY3-NE-OP` (2.7) / `PY3-PARSE` (3.x)
   - `x = 0777` (old octal) → `PY3-OCTAL` (2.7) / `PY3-PARSE` (3.x)
   - `x = 10L` (long suffix) → `PY3-LONG-SUFFIX` (2.7) / `PY3-PARSE` (3.x)
-  - `except Exception, e:` → `PY3-EXCEPT-COMMA` (2.7) / `PY3-PARSE` (3.x)
 
-  These are exactly the 8 of 14 rules whose detected construct is itself
-  syntax Python 3's grammar rejects: `scan_file` runs `ast.parse` before any
-  rule, so for these 8, the SyntaxError branch always wins the race on the
-  target, regardless of what the rule function would have found.
+  **Correction (same day):** `except Exception, e:` was wrongly included
+  as an 8th input in the first version of this entry. Verified directly
+  against real Python 3.14.7: `ast.parse("try:\n pass\nexcept Exception, e:\n pass\n")`
+  succeeds — Python 3's grammar still accepts a bare-tuple expression in
+  that position (`Exception, e` parses as the tuple `(Exception, e)`), so
+  `check_except_comma`'s `TOKEN_RULES` logic runs for real on the target
+  and reports the same `PY3-EXCEPT-COMMA` blocker as 2.7, byte-identical.
+  No defect here — see `tests/test_scanner.py:
+  test_except_comma_is_byte_identical_across_interpreters`. Dropped from
+  8 to 7 inputs; the "every rule whose detected construct is syntax
+  Python 3's grammar rejects" framing in the prior version of this entry
+  was also wrong for this specific rule, for the same reason.
 
 ## Dependencies
 | Package | Pinned | Needed for step | Supports it? | Source |
@@ -212,8 +255,12 @@ any other process (no pickle, cache, queue, or database).
 | 2026-10-22 | 5b75c6e | py2scan | 2.7.18→3.14 | L2 | `python3.14 .py-migrate/compile_check.py .py-migrate/out/files` | `checked 17, failed 0, unreadable 0`, exit 0 |
 | 2026-10-22 | 5b75c6e | py2scan | 2.7.18→3.14 | L2 | `docker run --rm -v "$PWD":/app -w /app py2scan-test python .py-migrate/compile_check.py .py-migrate/out/files` | `checked 17, failed 0, unreadable 0`, exit 0 |
 | 2026-10-22 | 5b75c6e | py2scan | 2.7.18→3.14 | (full suite) | `docker build -q -f Dockerfile.test -t py2scan-test . && docker run --rm -v "$PWD":/app -w /app py2scan-test python -m pytest -q -p no:cacheprovider tests` | `74 passed` |
-| 2026-10-22 | 5b75c6e | py2scan | 2.7.18→3.14 | (full suite) | `python3.14 -m pytest -q -p no:cacheprovider tests` (isolated venv wrapping the real installed interpreter) | `69 passed, 5 skipped` (skips are the R1-sanctioned Python-2-only-syntax tests; see `tests/test_rules.py`'s `PY2_ONLY_SYNTAX` marker) |
+| 2026-10-22 | 5b75c6e | py2scan | 2.7.18→3.14 | (full suite) | `python3.14 -m pytest -q -p no:cacheprovider tests` (isolated venv wrapping the real installed interpreter) | `69 passed, 5 skipped` (skips are the inherently-Python-2-only-syntax direct-ast.parse tests in `tests/test_rules.py`'s `PY2_ONLY_SYNTAX` marker — these 5 cannot run on Python 3 by construction; see T12 correction below) |
 | 2026-10-22 | 5b75c6e | py2scan | 2.7.18→3.14 | (flake8, not a level) | `flake8 --max-complexity 10 py2scan tests` under both 2.7.18 (Docker, flake8 3.9.2 pinned ad hoc — last release supporting 2.7, not added to requirements-dev.txt) and 3.14.7 | 0 violations of any kind, both interpreters |
+| 2026-10-22 | this commit | py2scan | 2.7.18→3.14 | (T12 fix) | `pytest tests/test_scanner.py` on both real interpreters, after adding 4 end-to-end `scan_file`-based tests (exec/backtick/raise-comma/raise-comma-with-traceback) alongside the existing print one, plus a byte-identical-across-interpreters test for except-comma | `9 passed` on both (2.7.18 and 3.14.7) |
+| 2026-10-22 | this commit | py2scan | 2.7.18→3.14 | (defect-input receipt) | `ast.parse(<input>)` for each of the 7 defect-list inputs, run directly against both real interpreters (2.7.18 via Docker stdin, 3.14.7 via the isolated venv) | all 7 parse successfully on 2.7.18, all 7 raise `SyntaxError` on 3.14.7 — confirms the defect-list claim with a receipt, not an assertion |
+| 2026-10-22 | this commit | py2scan | 2.7.18→3.14 | (R2) | full suite on both real interpreters after implementing R2 | `90 passed` on 2.7.18; `85 passed, 5 skipped` on 3.14.7 |
+| 2026-10-22 | this commit | py2scan | 2.7.18→3.14 | (flake8, not a level) | `flake8 --max-complexity 10 py2scan tests` under both real interpreters, after R2 and T12 fixes | 0 violations of any kind, both interpreters |
 
 ## Decisions
 - 2026-10-22, owner: `.md`-commit exception for `MIGRATION.md` and
@@ -227,9 +274,10 @@ any other process (no pickle, cache, queue, or database).
   recorded in full in session history; the ones affecting this document are
   cited inline above (R1 on the compile-guarantee vs. byte-identical JSON,
   R6 on multi-version readiness judging). R2 (ImportError-guarded
-  PY3-STDLIB), R3 (PY3-BUILTIN scoping), R4 (deployment scope), R5 (exit
-  code 2 / unreadable entries) are rules-engine changes for `fix`, not yet
-  implemented — listed here so `fix` starts from this list, not from memory.
+  PY3-STDLIB) is implemented — see Blockers, Resolved. R3 (PY3-BUILTIN
+  scoping), R4 (deployment scope), R5 (exit code 2 / unreadable entries)
+  remain rules-engine changes for `fix`, not yet implemented — listed here
+  so `fix` starts from this list, not from memory.
 - 2026-10-22, architect (relaying owner decisions), spec rulings R7–R10:
   recorded in full in session history; cited inline above where they refine
   R1/R6/R8 (R9's "no network, no required extra interpreter at scan time"

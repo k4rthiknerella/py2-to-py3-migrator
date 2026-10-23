@@ -267,3 +267,70 @@ def test_relative_import_is_not_found():
 
 def test_relative_import_of_a_colliding_local_name_is_not_found():
     assert rules(check_stdlib_import, "from .urllib2 import Request\n") == []
+
+
+def severities(fn, source):
+    return [(f.rule, f.severity) for f in fn("m.py", ast.parse(source))]
+
+
+def test_stdlib_import_guarded_by_bare_except_is_a_warning():
+    src = "try:\n    import urllib2\nexcept:\n    pass\n"
+    assert severities(check_stdlib_import, src) == [("PY3-STDLIB", "warning")]
+
+
+def test_stdlib_import_guarded_by_importerror_handler_is_a_warning():
+    src = ("try:\n    import cPickle as pickle\n"
+           "except ImportError:\n    import pickle\n")
+    assert severities(check_stdlib_import, src) == [("PY3-STDLIB", "warning")]
+
+
+def test_stdlib_import_fallback_in_importerror_handler_is_a_warning():
+    # The fallback import, inside the handler body, is just as guarded as
+    # the try-body import above it.
+    src = ("try:\n    import pickle\n"
+           "except ImportError:\n    import cPickle as pickle\n")
+    assert severities(check_stdlib_import, src) == [("PY3-STDLIB", "warning")]
+
+
+def test_stdlib_import_guarded_by_tuple_of_exceptions_is_a_warning():
+    src = ("try:\n    import urllib2\n"
+           "except (ImportError, ValueError):\n    pass\n")
+    assert severities(check_stdlib_import, src) == [("PY3-STDLIB", "warning")]
+
+
+def test_stdlib_import_guarded_by_modulenotfounderror_is_a_warning():
+    src = "try:\n    import urllib2\nexcept ModuleNotFoundError:\n    pass\n"
+    assert severities(check_stdlib_import, src) == [("PY3-STDLIB", "warning")]
+
+
+def test_stdlib_import_guarded_by_standarderror_is_a_warning():
+    src = "try:\n    import urllib2\nexcept StandardError:\n    pass\n"
+    assert severities(check_stdlib_import, src) == [("PY3-STDLIB", "warning")]
+
+
+def test_stdlib_import_not_guarded_by_unrelated_except_is_still_a_blocker():
+    src = "try:\n    import urllib2\nexcept ValueError:\n    pass\n"
+    assert severities(check_stdlib_import, src) == [("PY3-STDLIB", "blocker")]
+
+
+def test_stdlib_import_in_try_else_is_still_a_blocker():
+    src = ("try:\n    pass\nexcept ImportError:\n    pass\n"
+           "else:\n    import urllib2\n")
+    assert severities(check_stdlib_import, src) == [("PY3-STDLIB", "blocker")]
+
+
+def test_stdlib_import_in_try_finally_is_still_a_blocker():
+    src = ("try:\n    pass\nexcept ImportError:\n    pass\n"
+           "finally:\n    import urllib2\n")
+    assert severities(check_stdlib_import, src) == [("PY3-STDLIB", "blocker")]
+
+
+def test_stdlib_import_in_nested_function_inside_try_is_still_a_blocker():
+    src = ("try:\n    def f():\n        import urllib2\nexcept ImportError:"
+           "\n    pass\n")
+    assert severities(check_stdlib_import, src) == [("PY3-STDLIB", "blocker")]
+
+
+def test_stdlib_import_outside_any_try_is_still_a_blocker():
+    assert severities(check_stdlib_import, "import urllib2\n") == \
+        [("PY3-STDLIB", "blocker")]

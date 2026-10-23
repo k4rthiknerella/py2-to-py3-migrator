@@ -24,7 +24,7 @@ def as_dicts(findings):
     return [f.to_dict() for f in findings]
 
 
-def test_print_statement_is_a_blocker_on_whichever_interpreter_is_running():
+def test_print_statement_is_a_blocker_on_both_interpreters():
     # R1: Python-2-only syntax can't ast.parse on Python 3, so check_print
     # never runs there - scan_file reports PY3-PARSE instead of PY3-PRINT.
     # The never-blocker-free guarantee holds either way (this test), but the
@@ -43,6 +43,60 @@ def test_print_statement_is_a_blocker_on_whichever_interpreter_is_running():
     assert findings[0].severity == "blocker"
     expected_rule = "PY3-PARSE" if sys.version_info[0] >= 3 else "PY3-PRINT"
     assert findings[0].rule == expected_rule
+
+
+def _assert_blocker_on_both_interpreters(source, rule_on_27):
+    # Genuinely runs and asserts on both interpreters (T12): the exact rule
+    # differs by version (R1's recorded item-2b defect - see MIGRATION.md),
+    # but the never-blocker-free guarantee is checked for real on both
+    # sides, not skipped on one.
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "m.py"), "wb") as f:
+            f.write(source)
+        findings = scan_file(root, "m.py")
+    finally:
+        shutil.rmtree(root)
+    assert len(findings) == 1
+    assert findings[0].severity == "blocker"
+    expected = "PY3-PARSE" if sys.version_info[0] >= 3 else rule_on_27
+    assert findings[0].rule == expected
+
+
+def test_exec_statement_is_a_blocker_on_both_interpreters():
+    _assert_blocker_on_both_interpreters(b"exec 'x = 1'\n", "PY3-EXEC-STMT")
+
+
+def test_backtick_is_a_blocker_on_both_interpreters():
+    _assert_blocker_on_both_interpreters(b"y = `x`\n", "PY3-BACKTICK")
+
+
+def test_raise_comma_is_a_blocker_on_both_interpreters():
+    _assert_blocker_on_both_interpreters(b"raise E, v\n", "PY3-RAISE-COMMA")
+
+
+def test_raise_comma_with_traceback_is_a_blocker_on_both_interpreters():
+    _assert_blocker_on_both_interpreters(
+        b"raise E, v, tb\n", "PY3-RAISE-COMMA")
+
+
+def test_except_comma_is_byte_identical_across_interpreters():
+    # Unlike print/exec/backtick/raise-comma/<>/old-octal/long-suffix,
+    # `except Exception, e:` is NOT a SyntaxError on Python 3: its grammar
+    # still accepts a bare tuple expression there, so ast.parse succeeds
+    # (verified directly against a real 3.14.7 interpreter) and
+    # check_except_comma's TOKEN_RULES logic runs for real, producing the
+    # same PY3-EXCEPT-COMMA blocker on both sides - no item-2b defect here.
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "m.py"), "wb") as f:
+            f.write(b"try:\n    pass\nexcept Exception, e:\n    pass\n")
+        findings = scan_file(root, "m.py")
+    finally:
+        shutil.rmtree(root)
+    assert len(findings) == 1
+    assert findings[0].rule == "PY3-EXCEPT-COMMA"
+    assert findings[0].severity == "blocker"
 
 
 def test_jobs_does_not_affect_output():
