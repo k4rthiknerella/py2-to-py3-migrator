@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import errno
 import os
+import platform
 import shutil
 import sys
 import tempfile
@@ -142,6 +143,26 @@ def test_a_broken_file_does_not_affect_scanning_of_others():
         by_file.setdefault(f.file, []).append(f.rule)
     assert by_file["broken.py"] == ["PY3-PARSE"]
     assert by_file["ok.py"] == ["PY3-BUILTIN"]
+
+
+def test_parse_blocker_message_names_the_exact_running_interpreter():
+    # A real-stdlib parity scan (item 2a, MIGRATION.md) comparing this
+    # scanner's output against its pre-migration commit (0e39731) found
+    # this message used to hard-code the literal string "Python 2.7" -
+    # it now reports platform.python_version() instead (added in commit
+    # 5b75c6e, part of the straddle fix), since the exact patch version
+    # matters: the check_ne_op regression this session proved 3.14.7 and
+    # 3.14.9 can disagree about tokenizing the same source.
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "broken.py"), "wb") as f:
+            f.write(b"def f(:\n")
+        findings, problem = scan_file(root, "broken.py")
+    finally:
+        shutil.rmtree(root)
+    assert problem is None
+    assert len(findings) == 1
+    assert ("Python %s" % platform.python_version()) in findings[0].message
 
 
 def test_scanner_never_executes_the_code_it_scans():

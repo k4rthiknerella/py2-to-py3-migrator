@@ -776,6 +776,96 @@ Inputs, each verified against both real interpreters (2.7.18, 3.14.7) via
   Python 3's grammar rejects" framing in the prior version of this entry
   was also wrong for this specific rule, for the same reason.
 
+**Resolved, commit `pending`: item 2a, real-stdlib parity.** "Findings
+after migration match findings before it except for changes the spec
+items require, each covered by a test." Ran the pre-migration commit
+(`0e39731`, the last commit before `py-migrate assess` started — see
+`git log --all -S "def check_except_comma" --oneline` and
+`git diff --stat 0e39731 HEAD -- py2scan/`) and the current `HEAD`
+against the identical real tree at `/usr/local/lib/python2.7` inside the
+`py2scan-test` (2.7.18) image — 1333 real files, including
+`site-packages` (the task names "the real Python 2.7 stdlib
+(`/usr/local/lib/python2.7` in the repo's 2.7 image)" — whatever that
+path actually contains, including installed packages, is in scope; this
+was not filtered down to only files under `lib/python2.7` itself, not
+`site-packages`). Checked out the old commit into a disposable
+`git worktree` (not the working tree), ran both through a small driver
+calling `scanner.scan()` directly (bypassing the CLI, whose argument
+surface changed between the two commits), and diffed every
+`(file, line, rule)` triple's severity and message.
+
+Full diff: old = 3704 findings, new = 3950. 0 findings disappeared (no
+regressions - every (file, line, rule) the old scanner found, the new
+one still finds). 243 new findings, all attributable to R8/R10's
+expanded, interpreter-derived module/builtin lists replacing the
+original small hardcoded ones: 209 `PY3-STDLIB` (e.g. `mimetools`,
+`rexec`, `markupbase`, `SimpleXMLRPCServer` - never in the original
+25-module `STDLIB_MODULES` set from commit `0e39731`, now caught via
+`STDLIB_REMOVED_SINCE`'s full derivation) and 34 `PY3-BUILTIN` (18
+`StandardError`, R10's one builtin-list addition, commit `6f3c07c`; the
+other 16 - `unicode` x12, `file` x2, `basestring` x1, `raw_input` x1 -
+are not new vocabulary but a real scoping bug the old flat,
+whole-module `_module_bound_names` had: `gettext.py` defines
+`def install(self, unicode=False, ...)`, and the old scanner's
+module-wide `bound` set let that one parameter's name suppress every
+unrelated `unicode(...)` call anywhere else in the same file, including
+inside `ugettext`/`ungettext`, two entirely different methods - a real,
+silent false-negative on real-world code, not a synthetic case. R3's
+scoping rewrite (commit `054d2b2`) fixes exactly this, and already has
+its own unit test (`tests/test_rules.py:
+test_builtin_use_in_one_function_does_not_leak_to_another`) - this stdlib
+run is independent, real-world confirmation that the same bug was live
+in production-shaped code, not just the test's synthetic two-function
+example.
+
+311 changed findings (message and/or severity, same `(file, line, rule)`
+key): 308 `PY3-STDLIB` - 72 blocker→warning (R2's ImportError-guard fix;
+sampled `Cookie.py:213`, `SimpleHTTPServer.py:23`, `SocketServer.py:726`
+directly against the real source, all three genuine
+`try: from cPickle import ... except ImportError: from pickle import ...`-
+shaped guards, already covered by `tests/test_rules.py`'s existing
+ImportError-guard tests) and 236 message-text-only (R6's version-specific
+wording: `"renamed or removed on Python 3"` → `"removed on Python 3.6"`,
+etc. - already covered by R6's existing tests); 3 `PY3-PARSE` -
+message-only, all three `site-packages/*` files whose message changed
+from the literal hard-coded string `"does not parse under Python 2.7:
+..."` (commit `0e39731`) to `"does not parse under Python 2.7.18: ..."`
+(`platform.python_version()`, added in the straddle fix, commit
+`5b75c6e`) - this exact patch version precision is what this session's
+own `check_ne_op` 3.14.7-vs-3.14.9 regression already proved matters,
+and it had no dedicated test of its own until now.
+
+Two real test-coverage gaps surfaced by this exercise, closed in this
+commit: no test exercised a `PY3-STDLIB` module outside the original
+25-item hardcoded set (new test:
+`test_stdlib_import_derived_beyond_the_original_hardcoded_list`,
+`tests/test_rules.py`, using `mimetools`/`rexec`/`markupbase`/
+`SimpleXMLRPCServer`), and no test asserted `PY3-PARSE`'s message names
+the exact running interpreter rather than a hard-coded string (new test:
+`test_parse_blocker_message_names_the_exact_running_interpreter`,
+`tests/test_scanner.py`).
+
+**Scope limit of this check, stated plainly:** this diff only compares
+py2scan's own output across two of its own commits - it proves no
+regression was introduced migrating py2scan itself, but it cannot by
+construction detect a case where py2scan is simply wrong against a real
+interpreter's actual behavior on *both* sides of the diff (a bug present
+before and after). AutoSteer CI's independent real-interpreter check
+(3.6.15–3.15.1, run against this same real stdlib tree) is the stronger
+check for that failure mode and is tracked separately below, where it is
+currently failing - see Blockers.
+
+Driver scripts and the comparison tool live in `.py-migrate/out/`
+(gitignored, not committed - per-session scratch, reproducible from the
+commands above) rather than as a committed script, since the "before"
+side requires a disposable `git worktree` at a specific historical
+commit, which only makes sense run once per parity check, not as a
+standing CI-run script.
+
+2 new tests in this commit (the two gap closures above). Full suite:
+130 passed, 2 skipped (2.7.18); 125 passed, 7 skipped (3.14.7, 3.14.9).
+flake8 `--max-complexity 10` clean on all three.
+
 ## Flip preparation (prepared, not executed — see commit `09a45fd` for the
 one piece of infra this added; nothing below was merged, shipped, or
 changed outside this branch)
@@ -925,6 +1015,9 @@ any other process (no pickle, cache, queue, or database).
 | 2026-10-22 | n/a (research, no code change) | py2scan | (item 3, symlink loop / BOM / CRLF / empty file / `*.py` directory) | a self-referencing symlink, a BOM-prefixed file, a CRLF file, a 0-byte file, and a directory literally named `weird.py`, each scanned via real `scan`/`scan_file` calls on 2.7.18 | all 5 already handled correctly with no crash and no code change — confirms the manual verification claimed in the `91d8bd1` writeup above, closing the gap before committing dedicated tests for each |
 | 2026-10-22 | fe764df | py2scan | (item 3 edge-case tests, item 3 schema version, item 2c, item 5) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), 3.14.9 (Docker `py2scan-test314`) | `128 passed, 2 skipped` on 2.7.18; `123 passed, 7 skipped` on 3.14.7 and 3.14.9 |
 | 2026-10-22 | fe764df | py2scan | (item 3 edge-case tests, item 3 schema version, item 2c, item 5, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker, ad hoc `flake8<4`), 3.14.7 (Homebrew venv), and 3.14.9 (Docker `py2scan-test314`, ad hoc `flake8`) | first pass: 1 violation, 2.7.18 only (`F812 list comprehension redefines 'f'` in the new item-5 test — a real Python-2-only scoping difference, not a false positive); 0 violations on 3.14.7/3.14.9; after renaming the comprehension variable, 0 violations on all three |
+| 2026-10-23 | n/a (research, no code change) | py2scan | (item 2a, real stdlib parity, root cause) | `git worktree add --detach .py-migrate/out/before_worktree 0e39731`; two driver scripts calling `scanner.scan()` directly against `/usr/local/lib/python2.7` inside `py2scan-test` (2.7.18), once per commit (`0e39731`, `HEAD`); a Python diff script keyed on `(file, line, rule)` | old: 1333 files, 3704 findings; new: 1333 files, 3950 findings; 0 removed, 243 added (209 `PY3-STDLIB`, 34 `PY3-BUILTIN`), 311 changed message/severity (308 `PY3-STDLIB`, 3 `PY3-PARSE`) — full breakdown in Blockers, Resolved |
+| 2026-10-23 | pending | py2scan | (item 2a, two new regression tests) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), 3.14.9 (Docker `py2scan-test314`) | `130 passed, 2 skipped` on 2.7.18; `125 passed, 7 skipped` on 3.14.7 and 3.14.9 |
+| 2026-10-23 | pending | py2scan | (item 2a, two new regression tests, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker, ad hoc `flake8<4`), 3.14.7 (Homebrew venv), and 3.14.9 (Docker `py2scan-test314`, ad hoc `flake8`) | 0 violations, all three |
 
 ## Decisions
 - 2026-10-22, owner: `.md`-commit exception for `MIGRATION.md` and

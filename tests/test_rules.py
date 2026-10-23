@@ -357,6 +357,23 @@ def test_boundary_removal_applies_to_every_judged_version():
     assert findings[0].versions == ("3.9", "3.12")
 
 
+def test_stdlib_import_derived_beyond_the_original_hardcoded_list():
+    # R8: STDLIB_REMOVED_SINCE is derived from every real interpreter's
+    # own module list, not the small fixed set this rule shipped with
+    # originally (urllib2, ConfigParser, cPickle, and 22 others - see
+    # commit 0e39731). mimetools, rexec, markupbase and SimpleXMLRPCServer
+    # were never in that original set; a real-stdlib parity scan (item 2a,
+    # MIGRATION.md) found all four newly flagged in files that used to
+    # scan clean of this rule (BaseHTTPServer.py, Bastion.py, HTMLParser.py,
+    # DocXMLRPCServer.py) - reproduced directly here against the rule
+    # itself, not just the files that happened to surface it.
+    for name in ("mimetools", "rexec", "markupbase", "SimpleXMLRPCServer"):
+        tree = ast.parse("import %s\n" % name)
+        findings = list(check_stdlib_import("m.py", tree))
+        assert len(findings) == 1, name
+        assert findings[0].severity == "blocker"
+
+
 def severities(fn, source):
     return [(f.rule, f.severity) for f in fn("m.py", ast.parse(source))]
 
