@@ -10,5 +10,18 @@ requirements.txt to the last releases that support Python 2.7; do not upgrade
 them.
 
     python -m py2scan scan path/to/code
+    python -m py2scan scan path/to/code --format json
+    python -m py2scan scan path/to/code --html report.html
+    python -m py2scan scan path/to/code --config py2scan.yml
+    python -m py2scan scan path/to/code --jobs 8
 
-Status: two rules so far, PY3-PRINT and PY3-EXEC-STMT.
+`--config` reads YAML:
+
+    disable: [PY3-DIVISION]
+    severity:
+      PY3-METACLASS: blocker
+
+Status: 14 rules — PY3-PRINT, PY3-EXEC-STMT, PY3-BACKTICK, PY3-NE-OP,
+PY3-EXCEPT-COMMA, PY3-RAISE-COMMA, PY3-OCTAL, PY3-LONG-SUFFIX, PY3-DICT-ITER,
+PY3-BUILTIN, PY3-STDLIB, PY3-DIVISION (warning), PY3-METACLASS (warning),
+PY3-PARSE.
