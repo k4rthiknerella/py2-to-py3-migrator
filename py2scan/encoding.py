@@ -15,7 +15,14 @@ except ImportError:
 def read_lines(path):
     with open(path, "rb") as f:
         source = f.read()
-    encoding, _ = detect_encoding(io.BytesIO(source).readline)
+    try:
+        encoding, _ = detect_encoding(io.BytesIO(source).readline)
+    except SyntaxError:
+        # Item 3: an invalid coding declaration (one naming a codec that
+        # doesn't exist) makes detect_encoding itself raise - this is for
+        # display only, so fall back instead of taking the whole HTML
+        # report down over a single file's bad cookie.
+        encoding = "utf-8"
     return source.decode(encoding, "replace").splitlines()
 
 

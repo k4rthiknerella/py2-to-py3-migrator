@@ -93,10 +93,24 @@ def scan_file(root, rel, judged_versions=ALL_TARGET_VERSIONS):
         return [], str(e)
     try:
         tree = ast.parse(source, rel)
-    except SyntaxError as e:
-        findings = [Finding(rel, e.lineno or 1, "PY3-PARSE", "blocker",
+    except (SyntaxError, TypeError, ValueError, MemoryError,
+            RuntimeError) as e:
+        # Item 3: the scan must complete on any tree a working copy can
+        # contain. A SyntaxError is the common case, but CPython's
+        # compile()/ast.parse() raises other types for pathological
+        # input depending on the interpreter: Python 2.7 raises TypeError
+        # for embedded NUL bytes and MemoryError for a C parser stack
+        # overflow on deeply nested expressions (confirmed empirically:
+        # "s_push: parser stack overflow"); Python 3 raises SyntaxError
+        # for both of those specific cases instead, but RuntimeError
+        # covers RecursionError (added in 3.5, a RuntimeError subclass)
+        # for other deep-recursion failures without needing a name that
+        # does not exist on Python 2.
+        lineno = getattr(e, "lineno", None) or 1
+        message = getattr(e, "msg", None) or str(e) or type(e).__name__
+        findings = [Finding(rel, lineno, "PY3-PARSE", "blocker",
                             "does not parse under Python %s: %s"
-                            % (platform.python_version(), e.msg))]
+                            % (platform.python_version(), message))]
     else:
         tokens = _tokenize(source)
         findings = []

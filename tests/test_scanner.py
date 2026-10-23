@@ -308,3 +308,44 @@ def test_bad_byte_filename_is_scanned_and_stays_safe_to_serialize():
     assert len(files) == 1
     assert len(findings) == 1
     findings[0].to_dict()  # must never raise, on either interpreter
+
+
+def test_embedded_nul_byte_is_a_parse_blocker_not_a_crash():
+    # Item 3: the scan must complete on any tree a working copy can
+    # contain, including a file with an embedded NUL byte. Python 2.7's
+    # compile() raises TypeError for this (confirmed empirically - not
+    # SyntaxError), which the original except SyntaxError clause let
+    # propagate and crash the whole scan, not just this one file. Python
+    # 3 already raises SyntaxError for the same input.
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "m.py"), "wb") as f:
+            f.write(b"x = 1\n\x00\ny = 2\n")
+        findings, problem = scan_file(root, "m.py")
+    finally:
+        shutil.rmtree(root)
+    assert problem is None
+    assert len(findings) == 1
+    assert findings[0].rule == "PY3-PARSE"
+    assert findings[0].severity == "blocker"
+
+
+def test_deeply_nested_expression_is_a_parse_blocker_not_a_crash():
+    # Item 3: same guarantee, for a pathologically deep expression.
+    # Python 2.7's C parser raises MemoryError ("s_push: parser stack
+    # overflow", confirmed empirically) well before Python's own
+    # recursion limit would trigger a RecursionError; Python 3's PEG
+    # parser instead raises SyntaxError ("too many nested parentheses").
+    # Both used to propagate uncaught and crash the whole scan.
+    root = tempfile.mkdtemp()
+    try:
+        source = b"x = " + b"(" * 3000 + b"1" + b")" * 3000 + b"\n"
+        with open(os.path.join(root, "m.py"), "wb") as f:
+            f.write(source)
+        findings, problem = scan_file(root, "m.py")
+    finally:
+        shutil.rmtree(root)
+    assert problem is None
+    assert len(findings) == 1
+    assert findings[0].rule == "PY3-PARSE"
+    assert findings[0].severity == "blocker"

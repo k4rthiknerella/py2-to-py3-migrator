@@ -93,6 +93,22 @@ def test_read_lines_defaults_to_utf8_without_a_cookie():
     assert lines[0] == u"x = 'é'"
 
 
+def test_read_lines_falls_back_to_utf8_for_an_unknown_codec():
+    # Item 3: an invalid coding declaration (one naming a codec that
+    # doesn't exist) must not take down HTML rendering. detect_encoding
+    # itself raises SyntaxError for this - confirmed directly against
+    # lib2to3.pgen2.tokenize.detect_encoding before this was fixed.
+    root = tempfile.mkdtemp()
+    try:
+        path = os.path.join(root, "badcoding.py")
+        with open(path, "wb") as f:
+            f.write(b"# -*- coding: bogus-nonexistent-codec -*-\nx = 1\n")
+        lines = read_lines(path)
+    finally:
+        shutil.rmtree(root)
+    assert lines[1] == u"x = 1"
+
+
 def test_no_problems_is_a_complete_report():
     summary = summarize(["a.py"], [])
     assert summary["complete"] is True
