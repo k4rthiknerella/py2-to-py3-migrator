@@ -815,6 +815,46 @@ interpreter's own version number embedded via `platform.python_version()`
 entry below found missing and fixed; losing that precision to force
 byte-identical JSON would reintroduce the problem item 2a just closed).
 
+**Correction, 2026-10-23 (flagged by AutoSteer's third review): the
+"no code change on either side can close this while straddling" claim
+above was wrong for 5 of its 7 original inputs, and for most of the
+stdlib-scale totals quoted above - narrowed, not withdrawn; see
+"Resolved, commit `64ced43`: scanner.scan_file runs SOURCE_RULES and
+TOKEN_RULES independent of ast.parse" below for the fix and full
+before/after counts.** The claim conflated two different reasons a
+rule's finding can be missing on the target: (a) the rule needs a real
+`ast` tree and none exists once `ast.parse` fails (true, structural,
+still unfixable without a Python 2 parser) and (b) the rule only needed
+*tokens*, which `scanner.scan_file` was discarding anyway whenever
+`ast.parse` failed, for no reason connected to whether tokenizing
+itself had succeeded. `check_except_comma` already proved this
+distinction mattered (it was correctly excluded from the original 7
+precisely because it does not need a tree), but the same reasoning was
+never applied to `check_ne_op`, `check_octal`, `check_long_suffix`,
+`check_unicode_escape`, or `check_raise_comma` (the last one AST-based
+at the time, not yet converted - see below). Checked directly against
+real 2.7.18 and real 3.14.9, on the same real-stdlib tree AutoSteer used
+(excluding `site-packages/`, which is this test fleet's own installed
+dependencies, not stdlib): `PY3-EXCEPT-COMMA` 271/271, `PY3-OCTAL`
+91/91, `PY3-LONG-SUFFIX` 116/116, `PY3-UNICODE-ESCAPE` 2/2, `PY3-NE-OP`
+0/0 in this corpus but confirmed fixed directly (`x <> y` now reports
+both `PY3-PARSE` and `PY3-NE-OP` on 3.14.9, not `PY3-PARSE` alone), and
+`PY3-RAISE-COMMA` 741/741 (0 lost, down from 100% lost - this was the
+single largest category in the stdlib-scale total above). Genuinely
+still unfixable, confirmed by direct reproduction below the fix:
+`PY3-BACKTICK` (backtick is not valid Python 3 at the lexical level at
+all - `ast.parse` and `tokenize.tokenize` both reject it), the bare,
+no-parens forms of `print x` and `exec 'x = 1'` (these are a flat
+`SyntaxError` on Python 3's own grammar regardless of tokens - nothing
+to recover, and R1's guarantee is already satisfied by `PY3-PARSE`
+alone), `PY3-BUILTIN`/`PY3-DICT-ITER`/`PY3-DIVISION`/`PY3-STDLIB`/
+`PY3-METACLASS` (genuinely `AST_RULES`, need a real tree), and
+`PY3-UR-STRING` (Python 3.9+'s own tokenizer rejects a `ur`-prefixed
+string directly, confirmed - like backtick, this fails before any
+token-based rule could see it). The "no second interpreter once there
+is no straddle" framing in the paragraph above still holds for exactly
+this narrower, now-correctly-scoped remainder.
+
 **Resolved, commit `a66f578`: item 2a, real-stdlib parity.** "Findings
 after migration match findings before it except for changes the spec
 items require, each covered by a test." Ran the pre-migration commit
@@ -1305,6 +1345,212 @@ table's "0 auto / 0 manual" and L4 status above predate this finding and
 have not been changed here; whether this should move the blocker count
 to "0 auto / 1 manual," hold the unit at L3 instead of L4, or be
 accepted with a documented reason is for the architect to decide.
+
+**Resolved, commit `64ced43`: `scanner.scan_file` runs `SOURCE_RULES`
+and `TOKEN_RULES` independent of `ast.parse`'s outcome, closing most of
+the item 2b defect above - AutoSteer's third review, item 2.** Repro:
+stdlib `aifc.py` - 68 findings on 2.7.18, 1 (`PY3-PARSE`) on 3.14.9. Root
+cause: `scan_file` tried `ast.parse` first and, on failure, returned
+*only* a `PY3-PARSE` finding - skipping `TOKEN_RULES` and `SOURCE_RULES`
+entirely, even though tokenizing a file is a strictly weaker requirement
+than parsing it (CPython tokenizes `except X, e:`, `raise E, v`, `x <>
+y`, `0777`, `10L` and an invalid `\u` escape without raising; only the
+grammar stage rejects them). On `aifc.py` specifically, `ast.parse`
+fails on 3.14.9 over an unrelated line (`0xA2805140L`, "invalid
+hexadecimal literal") elsewhere in the file - which used to discard the
+file's other, unrelated findings too (`PY3-PRINT`, `PY3-RAISE-COMMA`,
+`PY3-BUILTIN`, `PY3-STDLIB`), none of which have anything to do with
+why `ast.parse` failed.
+
+Fix: `scan_file` now runs `SOURCE_RULES` unconditionally before
+attempting `ast.parse`, and separately attempts to tokenize the source
+regardless of whether `ast.parse` succeeded - `AST_RULES`/
+`VERSION_AWARE_AST_RULES` still need a real tree and stay gated on
+`ast.parse` succeeding (there is no tree to walk when it does not, on
+any interpreter), but `TOKEN_RULES`/`VERSION_AWARE_TOKEN_RULES` now run
+whenever tokenizing succeeds, on its own. A `PY3-PARSE` finding is
+still added whenever `ast.parse` fails - not replaced, added alongside
+whatever `TOKEN_RULES` also found, so a file can now carry both. Also
+converted `check_raise_comma` from `ast.Raise.inst`-based (an
+`AST_RULE`, needing a tree) to token-based (mirroring
+`check_except_comma`, which this file already used as a precedent) -
+`raise` is a real keyword on Python 3 too, so `raise E, v` still fails
+`ast.parse` there, but it always tokenizes cleanly, so there was no
+reason left to need a tree for it.
+
+Evidence, the same real stdlib tree (excluding `site-packages/`, 1394
+files, 3574 findings on 2.7.18) scanned on both real interpreters,
+before and after, findings grouped by rule (`2.7.18 / 3.14.9`, lost
+count): `PY3-EXCEPT-COMMA` 271/271 (0, already token-based before this
+fix), `PY3-OCTAL` 91/91 (0), `PY3-LONG-SUFFIX` 116/116 (0),
+`PY3-UNICODE-ESCAPE` 2/2 (0), `PY3-RAISE-COMMA` 741/741 (0, was 741/0 -
+every one recovered), `PY3-NE-OP` 0 occurrences in this corpus but
+confirmed fixed by direct reproduction (`x <> y` now reports both
+`PY3-PARSE` and `PY3-NE-OP` on 3.14.9). `aifc.py` itself: 3.14.9 now
+reports 3 findings (`PY3-PARSE` plus 2 `PY3-LONG-SUFFIX`, both correct -
+confirmed against the source, `0xA2805140L` at line 145 and
+`0x100000000L` at line 197), up from 1. Total findings recovered on
+this one corpus: 1221 (`271+91+116+2+741`), on top of the separate
+print/exec and `sys.maxint` fixes below. Structurally unrecoverable
+(needs `AST_RULES`, confirmed by direct reproduction, not assumed):
+`PY3-BUILTIN` 499/202 (297 lost), `PY3-DICT-ITER` 100/11 (89),
+`PY3-DIVISION` 111/29 (82), `PY3-STDLIB` 498/148 (350), `PY3-METACLASS`
+11/10 (1), and the bare (no-parens) forms of `print`/`exec`/backtick,
+which already get `PY3-PARSE` on 3.x with nothing to recover (see the
+correction above). Re-run: `docker cp` the real `/usr/local/lib/python2.7`
+tree out of the `py2scan-test` image once, mount it read-only into both
+`py2scan-test` and `py2scan-test314`, and run `scanner.scan()` directly
+against it on each, excluding `site-packages/`.
+
+Full suite: 180 passed, 9 skipped (2.7.18); 179 passed, 10 skipped
+(3.14.9, 3.14.7). flake8 `--max-complexity 10` clean on all three.
+compile_check: 17/0/0 on both real interpreters.
+
+**Resolved, commit `64ced43`: `print >> file, ...` and `exec(code) in
+g` are silently reinterpreted, not rejected, by Python 3's parser - a
+more severe case than the one above, since `ast.parse` succeeds and
+reports nothing at all, not even `PY3-PARSE` - AutoSteer's third
+review, item 2 (the aifc.py repro's category), found independently
+against stdlib `abc.py`.** `check_print`/`check_exec` key off
+`ast.Print`/`ast.Exec` node types that do not exist on Python 3's `ast`
+module at all - correct and complete there for every print/exec-
+statement shape that fails to parse under Python 3, which is every
+shape *except* two: `print` followed by `>>` (file-redirect - Python 2's
+grammar recognizes this specially; once `print` is an ordinary name on
+Python 3, `print >> file, "x"` is just a legal right-shift expression
+followed by a tuple), and `exec(...)` followed by `in` (globals/locals
+redirect - `exec(code) in g` is a legal containment expression: call
+`exec(code)`, discard the `None` result, check membership in `g`).
+Both parse to something harmless-looking instead of raising, so
+`scan_file` reports the file completely blocker-free on a 3.x run.
+Confirmed directly against the real stdlib: `abc.py:121-126`
+(`print >> file, "..."` in `_dump_registry`) got zero findings on
+3.14.9, `100%` readiness, before this fix.
+
+Fix: two new token-based rules, `check_print_redirect` and
+`check_exec_in_clause`, gated on `ast.Print`/`ast.Exec` being absent (so
+they add nothing on 2.7, where `check_print`/`check_exec` already cover
+this) - tokens lex the same way regardless of whether `print`/`exec` are
+keywords, so this needs no tree at all. Deliberately narrow: the other
+`print(...)`/`exec(...)` shapes (a bare single-argument call, or a
+parenthesized tuple for `exec`'s globals/locals) run identically on
+both Python 2 and 3 and need no fix - `bsddb/db.py`'s and
+`bsddb/dbutils.py`'s `exec("from . import db")` and
+`lib2to3/btm_matcher.py`'s `print("...")` are exactly this safe shape,
+confirmed by direct reproduction (still flagged on 2.7, since
+`check_exec`/`check_print` do not distinguish the safe single-argument
+shape from a genuine statement - conservative, consistent with this
+project's existing bias toward over-blocking rather than under - and
+correctly not flagged on 3.14.9, since they are not blockers there).
+This is the one deliberate, accepted asymmetry left in the real-stdlib
+comparison after this fix (3 files: `bsddb/db.py`, `bsddb/dbutils.py`,
+`lib2to3/btm_matcher.py` - down from 4 before this fix, `abc.py` now
+resolved) - not an R1 violation, since none of these three files fail
+to compile on any real Python 3.
+
+Evidence: `abc.py` scanned on 3.14.9 before/after this fix: 0 findings
+→ 1 (`PY3-PRINT` at line 121, matching 2.7's own finding exactly).
+Real-stdlib file-readiness diff (excluding `site-packages/`) dropped
+from 4 non-site-packages divergences to 3 (`abc.py` resolved; the three
+listed above are the accepted, safe-shape asymmetry). Re-run: scan
+`abc.py` from the real stdlib tree with both real interpreters and diff
+`file_readiness`.
+
+**Resolved, commit `64ced43`: R8, `STDLIB_REMOVED_NAMES` - a name
+removed from a module that itself survives into Python 3 - AutoSteer's
+third review, item 3.** Repro: stdlib `idlelib/CodeContext.py:15`,
+`from sys import maxint as INFINITY` - `sys` is not itself in
+`STDLIB_REMOVED_SINCE` (it never left), but the name `maxint` did, in
+3.0; `check_stdlib_import`'s `ImportFrom` handling only ever checked the
+module name, never the imported names themselves, so this got no
+finding at all. Derived empirically, not from memory: every `from
+<module> import <name>` the real 2.7 stdlib actually uses (941 unique
+pairs, via an AST walk over the same real stdlib tree, excluding
+`site-packages/`), checked with `__import__`/`hasattr` against real
+3.14.9 for modules that are not themselves in `STDLIB_REMOVED_SINCE` (so
+a genuinely missing name, not a casualty of its whole module being
+gone) - 101 true "no attribute" misses, narrowed by hand to 37 a
+migrating application is actually likely to use: dropped private
+(leading-underscore) modules and names, `idlelib`'s own internal
+submodule layout (renamed wholesale on Python 3, but nothing outside
+`idlelib` itself imports those names), and platform-conditional names
+this Linux-only test fleet cannot check either way (`sys.getwindowsversion`).
+Added: `sys.maxint`; `itertools.{imap,izip,ifilter,ifilterfalse}`;
+`string.{join,split,strip,rstrip,find,rfind,lower,expandtabs}`;
+`types.{StringType,DictType,ListType,TupleType,ClassType,InstanceType}`;
+`urllib.{quote,unquote,getproxies,proxy_bypass,splittype,splithost,
+splitport,splituser,splitpasswd,splitattr,splitvalue,splittag,toBytes,
+unwrap,url2pathname,addinfourl,ftpwrapper,localhost}`;
+`warnings.warnpy3k` - all removed in Python 3.0, well before R6's judged
+range starts, so every entry uses the "3.6" floor like the existing
+pre-3.6 entries in `STDLIB_REMOVED_SINCE` do.
+
+Known, explicitly not-fixed gap: this only covers the `from <module>
+import <name>` form - `import sys; sys.maxint` (attribute access after
+a plain import) is the more common real-world spelling (39 of 40 real-
+stdlib `sys.maxint` hits in the corpus are this form, not `ImportFrom`)
+and needs tracking which name a plain import bound and then walking for
+`Attribute` access on it - the same scope `check_builtin_use` already
+does for bare names, which this rule does not do. Pinned by
+`tests/test_rules.py::test_stdlib_attribute_access_after_a_plain_import_is_a_known_gap`
+so a future fix changes that assertion rather than silently regressing
+it.
+
+Evidence: `idlelib/CodeContext.py` scanned on both real interpreters -
+`PY3-STDLIB` at line 15, `"import of sys.maxint; removed on Python 3.6"`,
+identical on both sides (this check is a pure AST/dict lookup, with no
+dependency on the running interpreter's own `sys.maxint`). Re-run:
+`python -m py2scan scan --format json idlelib` against the real stdlib
+tree on either interpreter.
+
+**Resolved, commit `64ced43`: a new rule, `PY3-TAB-SPACE` - ambiguous
+tab/space indentation, a genuine item 3/R1 violation (a file no real
+Python 3 compiles, reported free of blockers on 2.7) independently
+confirmed, not the architect's held-back repro for item 4 (which names
+no input).** Python 3 has rejected this, as `TabError`, since 3.0;
+Python 2.7's own tokenizer and compiler never check it by default (only
+`-tt` makes the real CPython binary strict, and 2.7's `tokenize` module
+does not implement the check at all) - so a real 2.7 codebase can and
+does contain indentation that parses silently on 2.7 and is rejected
+outright by every real Python 3. Confirmed directly: a line indented
+with one tab, followed by a line at the real (tabsize-8) same level
+indented with eight spaces, parses on 2.7.18 and raises
+`TabError: inconsistent use of tabs and spaces in indentation` on
+3.14.9's tokenizer alone - before the parser even runs.
+
+Fix: `check_ambiguous_indentation`, a token-based rule, a direct port of
+CPython's own dual-stack check - every logical line's leading
+whitespace is measured two ways, `col` (a tab advances to the next
+multiple of 8, the real rule) and `altcol` (a tab counts as one column,
+like a space); a real indent, dedent or same-level match must agree
+under both, or it is exactly what makes Python 3 raise `TabError`.
+Applies to every judged version uniformly (3.6-3.15), since this has
+been true since 3.0. Verified against 6 cases on real 2.7.18: the
+ambiguous case above (flags, at the exact line `TabError` names);
+consistent tabs-only and consistent spaces-only, including across a
+dedent (does not flag); two sibling blocks each internally consistent
+but in a different style from each other (does not flag - no
+interaction between them); no indentation at all (does not flag).
+
+Residual, accepted gap, the same shape as the architecture fix above:
+this is a `TOKEN_RULE`, so it needs tokenizing to succeed - which it
+does on 2.7.18 for the ambiguous case (2.7's tokenizer does not check
+this at all), but does not on 3.x, where the real tokenizer raises
+`TabError` directly, before this rule would ever run. The gap this
+closes is therefore exactly the primary, intended runtime (2.7.18,
+where this rule now correctly blocks the file for every judged
+version) - a 3.x scan of the same file still gets only `PY3-PARSE`,
+which is R1-sufficient (a blocker is still reported, for every judged
+version) but coarser, the same already-accepted direction of residual
+divergence as elsewhere in this document.
+
+Full suite, this round combined: 180 passed, 9 skipped (2.7.18); 179
+passed, 10 skipped (3.14.9 Docker, 3.14.7 Homebrew venv). flake8
+`--max-complexity 10` clean on all three. compile_check: 17/0/0 on both
+real interpreters. README's rule table and count (17 → 19) updated for
+`PY3-NON-TEXT-CODING` (added an earlier session, never added to the
+table) and this session's `PY3-TAB-SPACE`; `PY3-PARSE`'s row corrected
+to drop the now-false "exclusive" claim.
 
 ## Flip preparation (prepared, not executed — see commit `09a45fd` for the
 one piece of infra this added; nothing below was merged, shipped, or
