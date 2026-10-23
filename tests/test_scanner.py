@@ -27,7 +27,11 @@ def as_dicts(findings):
 def test_print_statement_is_a_blocker_on_whichever_interpreter_is_running():
     # R1: Python-2-only syntax can't ast.parse on Python 3, so check_print
     # never runs there - scan_file reports PY3-PARSE instead of PY3-PRINT.
-    # Either way the guarantee holds: the file is never reported blocker-free.
+    # The never-blocker-free guarantee holds either way (this test), but the
+    # resulting rule/message text is NOT byte-identical JSON across
+    # interpreters for this input - R1 says the guarantee wins the conflict,
+    # not that the non-identical JSON is an accepted divergence; it is an
+    # open, recorded defect against item 2b (see MIGRATION.md's Blockers).
     root = tempfile.mkdtemp()
     try:
         with open(os.path.join(root, "m.py"), "wb") as f:

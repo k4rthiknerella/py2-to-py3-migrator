@@ -25,8 +25,12 @@ from py2scan.rules import (
 # Python-2-only syntax (print/exec statements, backticks, raise-with-comma)
 # can never ast.parse successfully on Python 3 - scanner.scan_file catches
 # that SyntaxError and reports PY3-PARSE before these rule functions would
-# ever run, which is the accepted, recorded divergence R1 sanctions. There's
-# nothing to port: the source literally cannot reach the rule on Python 3.
+# ever run. There's nothing to port: the source literally cannot reach the
+# rule on Python 3. R1 says the never-blocker-free guarantee wins this
+# conflict and keeps PY3-PARSE - it does NOT call the resulting non-
+# identical JSON (PY3-PRINT on 2.7 vs PY3-PARSE on 3.x for the same input)
+# an accepted divergence; R1 requires it recorded as an open defect against
+# item 2b instead (see MIGRATION.md's Blockers section).
 PY2_ONLY_SYNTAX = pytest.mark.skipif(
     sys.version_info[0] >= 3, reason="syntax is Python-2-only; see R1")
 

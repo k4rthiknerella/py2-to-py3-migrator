@@ -100,11 +100,13 @@ Waves: none — one unit, no import graph.
   fixed with `json.dumps(summary, sort_keys=True)` in `cli.py`.
 - `tests/test_scanner.py`, `tests/test_cli.py` · fixtures using print
   statements could never produce their original granular findings on Python
-  3 (ast.parse fails before the rule ever runs — R1's accepted divergence) ·
-  switched to constructs that parse on both interpreters; added a dedicated
-  cross-interpreter test (`test_print_statement_is_a_blocker_on_whichever_
-  interpreter_is_running`) asserting the R1 guarantee directly regardless of
-  which rule fires.
+  3 (ast.parse fails before the rule ever runs) · switched to constructs
+  that parse on both interpreters so these tests exercise what they're
+  actually about; added a dedicated cross-interpreter test
+  (`test_print_statement_is_a_blocker_on_whichever_interpreter_is_running`)
+  asserting the R1 never-blocker-free guarantee directly, regardless of
+  which rule fires. This is **not** the same as closing the underlying
+  defect — see "Open defect against item 2b" below.
 - `tests/test_rules.py:token_rules` · called `tokenize.generate_tokens`
   directly on a `str`, which Python 3's `io.BytesIO` rejects · fixed by
   routing through `scanner._tokenize` (the same production tokenizer), after
@@ -128,6 +130,36 @@ Waves: none — one unit, no import graph.
 - Full systematic Python 3.0–3.14 What's New Removed/Porting sweep — not
   started; only targeted/suspected items have been checked so far (see
   Breaking changes in scope).
+
+**Open defect against item 2b (not an accepted divergence — flagged by
+AutoSteer trigger T12, corrected 2026-10-22):** R1 states that when the
+never-blocker-free guarantee conflicts with byte-identical JSON across the
+two interpreters, the guarantee wins, and every such conflicting input must
+be recorded as a defect, with the input attached — explicitly *not* called
+an accepted divergence. An earlier version of this document and of code
+comments in `tests/test_rules.py`/`tests/test_scanner.py` wrongly called
+this "R1's accepted divergence"; that wording has been corrected (see
+commit history). The defect itself: for any of the 8 inputs below, `scan`
+reports a single `PY3-PARSE` blocker on the target and a different,
+granular blocker (with a different `rule` and `message`) on the source —
+the JSON is not byte-identical, and per R1 it stays that way, because
+`ast.Print`/`Exec`/`Repr` do not exist on Python 3's `ast` module and the
+syntax cannot reach `ast.parse` successfully there at all. This cannot be
+closed while straddling; it is open until flip (when there is no longer a
+2.7 side to diverge from). Inputs, each verified on both real interpreters:
+  - `print x` (or any print statement) → `PY3-PRINT` (2.7) / `PY3-PARSE` (3.x)
+  - `exec 'x = 1'` → `PY3-EXEC-STMT` (2.7) / `PY3-PARSE` (3.x)
+  - `` `x` `` (backtick) → `PY3-BACKTICK` (2.7) / `PY3-PARSE` (3.x)
+  - `raise E, v` / `raise E, v, tb` → `PY3-RAISE-COMMA` (2.7) / `PY3-PARSE` (3.x)
+  - `x <> y` → `PY3-NE-OP` (2.7) / `PY3-PARSE` (3.x)
+  - `x = 0777` (old octal) → `PY3-OCTAL` (2.7) / `PY3-PARSE` (3.x)
+  - `x = 10L` (long suffix) → `PY3-LONG-SUFFIX` (2.7) / `PY3-PARSE` (3.x)
+  - `except Exception, e:` → `PY3-EXCEPT-COMMA` (2.7) / `PY3-PARSE` (3.x)
+
+  These are exactly the 8 of 14 rules whose detected construct is itself
+  syntax Python 3's grammar rejects: `scan_file` runs `ast.parse` before any
+  rule, so for these 8, the SyntaxError branch always wins the race on the
+  target, regardless of what the rule function would have found.
 
 ## Dependencies
 | Package | Pinned | Needed for step | Supports it? | Source |
