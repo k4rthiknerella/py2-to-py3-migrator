@@ -28,10 +28,30 @@ Units is the single `py2scan` package rooted at this repo's `setup.py`.
 user-selectable, all by default). The rules-engine work for R6 is scoped under
 Breaking changes in scope and is not yet implemented — see Blockers.
 
+**R9 note (architect ruling, 2026-10-22):** R4 describes where py2scan runs
+*today* (this repo only), not its users — py2scan is open-source and must
+work for a user with only the one Python it runs on and no network. The
+R1/R6 "never reported blocker-free" guarantee is a property of the report,
+not of any one mechanism, and must hold under that condition: a scan never
+downloads anything, and at scan time py2scan may opportunistically use any
+judged-version interpreter that happens to be installed, but a missing one
+must never weaken a verdict. Practical effect on the still-unstarted R6/R7/R8
+work: the per-version blocker logic must be static knowledge shipped in
+py2scan (grammar/stdlib/builtin facts baked in), not a runtime dependency on
+having e.g. a real 3.9 interpreter on PATH — real interpreters are test
+equipment used to *prove* those static facts during development (R6, R7),
+never a scan-time requirement.
+
+**R10 note (architect ruling, 2026-10-22):** parallel to R8's PY3-STDLIB
+scope, PY3-BUILTIN must cover every name in Python 2.7's `__builtin__`
+missing from a judged version's `builtins`, not just the original fixed
+`BUILTIN_NAMES` list — derived from the interpreters (R6, R7), with the
+derivation recorded. Not started; folded into the same R6/R7/R8 matrix work.
+
 ## Units
 | Unit | Owner | Runtime today | Effective target | Step | Level | Blockers (auto / manual) | Size | Next |
 |---|---|---|---|---|---|---|---|---|
-| py2scan | Karthik Nerella | 2.7.18 | 3.14 | 2.7.18 → 3.14 | L2 | 3 auto / 2 manual | L | `fix py2scan` |
+| py2scan | Karthik Nerella | 2.7.18 | 3.14 | 2.7.18 → 3.14 | L2 | 0 auto / 6 manual (R2, R3, R5, R6-R10 matrix, security scan, full What's New sweep) | L | `fix py2scan` |
 
 L2 is proved by `.py-migrate/compile_check.py`, committed, run on both sides —
 see Evidence. No consumers import py2scan as a library (it is a CLI-only
@@ -51,48 +71,63 @@ Waves: none — one unit, no import graph.
 
 ## Blockers
 ### py2scan
-- `py2scan/rules.py` (9 functions: `check_print`, `check_exec`,
-  `check_backtick`, `check_raise_comma`, `check_dict_iter`, `check_metaclass`,
-  `check_division`, `check_builtin_use`, `check_stdlib_import`) and
-  `py2scan/scanner.py:scan_file`'s `ast.parse` call · **the core blocker**:
-  every one of these reads a Python 2.7 `ast` tree, and under Python 3.14,
-  `ast.parse`/`compile()` raise `SyntaxError` on the Python-2-only syntax
-  py2scan exists to detect (verified: `ast.parse('print "hi"')` under 3.14 →
-  `SyntaxError: Missing parentheses in call to 'print'`), and `ast.Print`,
-  `ast.Exec`, `ast.Repr` do not exist as attributes of Python 3.14's `ast`
-  module at all (verified: `hasattr(ast, 'Print')` → `False` on 3.14) · fix is
-  manual — see Strategy below, this is the item `fix` must design before
-  touching code · Size L.
-- `py2scan/encoding.py:5` · `from lib2to3.pgen2.tokenize import detect_encoding`
-  · `lib2to3` was removed from the stdlib in Python 3.13 (verified:
-  `ModuleNotFoundError: No module named 'lib2to3'` on 3.14.7) · auto-fixable:
-  Python 3's own `tokenize` module has had `detect_encoding` natively since
-  3.2 and behaves identically (verified side by side on both the cookie and
-  no-cookie cases) · Size S.
-- `py2scan/rules.py:check_long_suffix` (reads `tokenize.NUMBER` tokens for a
-  trailing `L`/`l`) · under Python 3's tokenizer, `10L` lexes as two tokens,
-  `NUMBER '10'` then `NAME 'L'`, not one `NUMBER '10L'` token (verified) · fix
-  is mechanical (match a `NUMBER` token immediately followed, with no gap, by
-  a bare `NAME` token `'L'` or `'l'`) but changes the rule's shape, so it's
-  manual with a test, not purely auto · Size S.
-- `py2scan/report.py:summarize` → `cli.py`'s `json.dumps(summary)` · **not
-  byte-identical across interpreters today**, verified: the same
-  `Finding.to_dict()` dict literal serializes with different key order on
-  2.7 (`{"line":...,"message":...,"rule":...,"file":...,"severity":...}`,
-  hash-order) vs 3.14 (`{"file":...,"line":...,"rule":...,"severity":...,"message":...}`,
-  insertion order) because CPython 2.7 dict iteration order is hash-bucket
-  order, not insertion order, and 3.7+ guarantees insertion order. This is a
-  real defect against item 2b ("the same input gives byte-identical JSON
-  under 2.7 and under the target"), recorded per R1's instruction, not an
-  accepted divergence · auto-fixable: `json.dumps(..., sort_keys=True)` ·
-  Size S.
-- R6 (owner decision, 2026-10-22): py2scan's rules currently carry no
-  per-Python-3-version applicability data. Reporting "which of 3.6–3.15 this
-  file is ready for" and "which versions this blocker applies to" needs each
-  rule annotated with the version range it is true for, each annotation
-  sourced from a primary source and tested against a real interpreter of
-  that version. Not started. This is the largest remaining item; it is
+
+**Resolved, commit `5b75c6e`:**
+- `py2scan/rules.py` (`check_print`, `check_exec`, `check_backtick`) ·
+  referenced `ast.Print`/`ast.Exec`/`ast.Repr` directly, which don't exist as
+  attributes on Python 3's `ast` module at all — crashed any file that
+  successfully `ast.parse`d, not just ones containing the construct (proven:
+  `AttributeError: module 'ast' has no attribute 'Print'` reached from inside
+  a `ProcessPoolExecutor` worker scanning a file with no print statement at
+  all) · fixed with a `getattr(ast, name, None)` guard per rule, each a safe
+  no-op when the attribute is absent (the tree could never contain that node
+  type on an interpreter where parsing it would have raised `SyntaxError`
+  first) · test: full suite, both interpreters.
+- `py2scan/rules.py:check_raise_comma` · Python 3's `ast.Raise` has no
+  `.inst` attribute at all · fixed with `getattr(node, "inst", None)`.
+- `py2scan/rules.py:_module_bound_names` · Python 3 represents function
+  parameters as `ast.arg` nodes, not `ast.Name(ctx=ast.Param())` · fixed with
+  a version-guarded `_ARG_TYPE = getattr(ast, "arg", None)` branch.
+- `py2scan/rules.py:check_long_suffix` · Python 3's tokenizer splits `10L`
+  into `NUMBER '10'` + `NAME 'L'`, not one token · fixed by tracking
+  token-adjacency (`start == prev_end`) across the two-token form.
+- `py2scan/encoding.py:5` · `lib2to3` removed in Python 3.13 · fixed with a
+  `try/except ImportError` falling back to stdlib `tokenize.detect_encoding`
+  (present natively since 3.2) · verified identical behavior on both the
+  cookie and no-cookie cases.
+- `py2scan/report.py`/`cli.py`'s `json.dumps(summary)` · not byte-identical
+  across interpreters (2.7 hash-bucket dict order vs 3.7+ insertion order) ·
+  fixed with `json.dumps(summary, sort_keys=True)` in `cli.py`.
+- `tests/test_scanner.py`, `tests/test_cli.py` · fixtures using print
+  statements could never produce their original granular findings on Python
+  3 (ast.parse fails before the rule ever runs — R1's accepted divergence) ·
+  switched to constructs that parse on both interpreters; added a dedicated
+  cross-interpreter test (`test_print_statement_is_a_blocker_on_whichever_
+  interpreter_is_running`) asserting the R1 guarantee directly regardless of
+  which rule fires.
+- `tests/test_rules.py:token_rules` · called `tokenize.generate_tokens`
+  directly on a `str`, which Python 3's `io.BytesIO` rejects · fixed by
+  routing through `scanner._tokenize` (the same production tokenizer), after
+  encoding the source to bytes.
+- flake8 E501 (36 violations across `py2scan/` and `tests/`) · fixed by line
+  wrapping only, no logic changes · verified `flake8 --max-complexity 10`
+  clean (0 complexity, 0 line-length) on both real interpreters.
+
+**Still open:**
+- R2 (ImportError-guarded PY3-STDLIB → warning, not blocker) — not started.
+- R3 (PY3-BUILTIN scoping per Python 2.7's real compiler semantics,
+  including `del` and bare `global`) — not started.
+- R5 (exit code 2 and incomplete-report marking for unreadable entries) —
+  not started.
+- R6/R7/R8/R9/R10 (multi-version readiness matrix, 3.6–3.15, final-release
+  interpreters only with exact patch versions recorded, expanded PY3-STDLIB
+  and PY3-BUILTIN derivation, static-knowledge-not-runtime-dependency
+  constraint) — not started. This is the largest remaining item; it is
   `fix`-phase work, scoped here, not assessed line-by-line yet · Size L.
+- Security advisory scanning (item 4) — not started.
+- Full systematic Python 3.0–3.14 What's New Removed/Porting sweep — not
+  started; only targeted/suspected items have been checked so far (see
+  Breaking changes in scope).
 
 ## Dependencies
 | Package | Pinned | Needed for step | Supports it? | Source |
@@ -106,11 +141,11 @@ Waves: none — one unit, no import graph.
 | futures | 3.3.0 | source only | N/A on target — `concurrent.futures` has been in the stdlib since Python 3.2; py2scan already imports it as `from concurrent.futures import ProcessPoolExecutor`, the same spelling the backport provides on 2.7 | Python 3 stdlib docs |
 | six | 1.16.0 | neither | Pinned in `requirements.txt`/`setup.py` but never imported anywhere in `py2scan/` or `tests/` (verified by grep) — dead weight on both sides | grep, this session |
 
-Planned action (not yet made — `fix` territory, flagged here for size/risk):
-bump PyYAML to 6.0.3 for the target side only while straddling (source pin
-stays at 5.4.1 per the architect's "source-side pins stay while you
-straddle" ruling), move `futures` behind a `python_version < "3"` marker,
-and drop `six` entirely.
+Done, commit `5b75c6e`: PyYAML pinned to 6.0.3 for the target side only
+(`python_version >= "3"`) while the source pin stays at 5.4.1 per the
+architect's "source-side pins stay while you straddle" ruling; `futures`
+moved behind `python_version < "3"`; `six` dropped entirely. Verified: both
+pins install and import cleanly on their respective interpreters.
 
 ## Runtime surfaces
 | File | Pins | Unit | Changes at flip |
@@ -142,6 +177,11 @@ any other process (no pickle, cache, queue, or database).
 | 2026-10-22 | 0e39731 | py2scan | 2.7.18→3.14 | L2 | `python3.14 .py-migrate/compile_check.py .py-migrate/out/files` | `checked 16, failed 0, unreadable 0`, exit 0 |
 | 2026-10-22 | 0e39731 | py2scan | 2.7.18→3.14 | L2 | `docker run --rm -v "$PWD":/app -w /app py2scan-test python .py-migrate/compile_check.py .py-migrate/out/files` | `checked 16, failed 0, unreadable 0`, exit 0 |
 | 2026-10-22 | 0e39731 | py2scan | 2.7.18→3.14 | (flake8 baseline, not a level) | `flake8 --max-complexity 10 py2scan/` under 3.14.7 (via an isolated venv) | 0 complexity (C901) violations; 22 line-length (E501) violations only |
+| 2026-10-22 | 5b75c6e | py2scan | 2.7.18→3.14 | L2 | `python3.14 .py-migrate/compile_check.py .py-migrate/out/files` | `checked 17, failed 0, unreadable 0`, exit 0 |
+| 2026-10-22 | 5b75c6e | py2scan | 2.7.18→3.14 | L2 | `docker run --rm -v "$PWD":/app -w /app py2scan-test python .py-migrate/compile_check.py .py-migrate/out/files` | `checked 17, failed 0, unreadable 0`, exit 0 |
+| 2026-10-22 | 5b75c6e | py2scan | 2.7.18→3.14 | (full suite) | `docker build -q -f Dockerfile.test -t py2scan-test . && docker run --rm -v "$PWD":/app -w /app py2scan-test python -m pytest -q -p no:cacheprovider tests` | `74 passed` |
+| 2026-10-22 | 5b75c6e | py2scan | 2.7.18→3.14 | (full suite) | `python3.14 -m pytest -q -p no:cacheprovider tests` (isolated venv wrapping the real installed interpreter) | `69 passed, 5 skipped` (skips are the R1-sanctioned Python-2-only-syntax tests; see `tests/test_rules.py`'s `PY2_ONLY_SYNTAX` marker) |
+| 2026-10-22 | 5b75c6e | py2scan | 2.7.18→3.14 | (flake8, not a level) | `flake8 --max-complexity 10 py2scan tests` under both 2.7.18 (Docker, flake8 3.9.2 pinned ad hoc — last release supporting 2.7, not added to requirements-dev.txt) and 3.14.7 | 0 violations of any kind, both interpreters |
 
 ## Decisions
 - 2026-10-22, owner: `.md`-commit exception for `MIGRATION.md` and
@@ -158,3 +198,9 @@ any other process (no pickle, cache, queue, or database).
   PY3-STDLIB), R3 (PY3-BUILTIN scoping), R4 (deployment scope), R5 (exit
   code 2 / unreadable entries) are rules-engine changes for `fix`, not yet
   implemented — listed here so `fix` starts from this list, not from memory.
+- 2026-10-22, architect (relaying owner decisions), spec rulings R7–R10:
+  recorded in full in session history; cited inline above where they refine
+  R1/R6/R8 (R9's "no network, no required extra interpreter at scan time"
+  constraint on the still-unstarted R6/R7/R8 matrix work; R10's PY3-BUILTIN
+  scope expansion, parallel to R8's PY3-STDLIB expansion). None of R7–R10
+  are implemented yet.
