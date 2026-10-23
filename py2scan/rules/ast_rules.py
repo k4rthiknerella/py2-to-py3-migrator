@@ -244,6 +244,13 @@ UNIVERSAL_STDLIB_MODULES = frozenset([
     "SimpleDialog", "Tix", "Tkconstants", "Tkdnd", "tkColorChooser",
     "tkCommonDialog", "tkFileDialog", "tkFont", "tkMessageBox",
     "tkSimpleDialog",
+    # Found by sweeping every top-level name under real 2.7.18's Lib/ (215
+    # names) through `import NAME` on 3.6.15 through 3.15.1, instead of
+    # trusting PEP 3108's list to be exhaustive - these eight were missing
+    # from every list above despite failing on every judged version too
+    # (independent check, round 2, item 4):
+    "bsddb", "dummy_thread", "hotshot", "os2emxpath", "statvfs",
+    "sunaudio", "toaiff", "xmllib",
 ])
 
 # R8: modules that stayed importable past the 3.0 boundary and were only
@@ -263,9 +270,13 @@ UNIVERSAL_STDLIB_MODULES = frozenset([
 #   - What's New in 3.15: sre_compile, sre_constants, sre_parse -> 3.15.
 #   - Empirical only (no PEP; confirmed OK on the version before, gone on
 #     the version named): macpath -> 3.8, parser/symbol/formatter -> 3.10,
-#     binhex -> 3.11.
+#     binhex -> 3.11, macurl2path -> 3.7 (gone a full minor before its
+#     companion macpath), dummy_threading -> 3.9 (found by the same full
+#     Lib/ sweep as the eight new UNIVERSAL_STDLIB_MODULES entries above).
 VERSIONED_STDLIB_REMOVALS = {
+    "macurl2path": (3, 7),
     "macpath": (3, 8),
+    "dummy_threading": (3, 9),
     "parser": (3, 10),
     "symbol": (3, 10),
     "formatter": (3, 10),

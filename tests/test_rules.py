@@ -440,6 +440,32 @@ def test_bare_urllib_import_is_not_a_stdlib_finding():
     assert rules(check_stdlib, "import dbm\n") == []
 
 
+def test_newly_found_universal_stdlib_removals_are_blockers():
+    # Independent check, round 2, item 4: these eight were missing from
+    # UNIVERSAL_STDLIB_MODULES despite `import NAME` failing on real
+    # 2.7.18's own names across every judged version (3.6.15-3.15.1) -
+    # found by sweeping the entire real Lib/ listing instead of relying
+    # on PEP 3108 alone. Real repro: a file holding only `import hotshot`
+    # got no finding at all before this fix.
+    for name in ("bsddb", "dummy_thread", "hotshot", "os2emxpath",
+                 "statvfs", "sunaudio", "toaiff", "xmllib"):
+        assert rules(check_stdlib, "import %s\n" % name) == [(1, "PY3-STDLIB")], name
+
+
+def test_macurl2path_removed_in_37_one_minor_before_macpath():
+    tree, tokens = parsed("import macurl2path\n")
+    findings = list(check_stdlib("m.py", tree, tokens, ((3, 6), (3, 7), (3, 8))))
+    assert len(findings) == 1
+    assert findings[0].versions == ((3, 7), (3, 8))
+
+
+def test_dummy_threading_removed_in_39():
+    tree, tokens = parsed("import dummy_threading\n")
+    findings = list(check_stdlib("m.py", tree, tokens, ((3, 8), (3, 9), (3, 10))))
+    assert len(findings) == 1
+    assert findings[0].versions == ((3, 9), (3, 10))
+
+
 def test_true_assigned_to_is_found():
     assert rules(check_keyword_binding, "True = 5\n") == [(1, "PY3-KEYWORD-BINDING")]
 
