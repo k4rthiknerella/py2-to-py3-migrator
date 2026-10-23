@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import json
 import os
 import shutil
 import tempfile
@@ -48,3 +49,19 @@ def test_disable_rule_via_config(tmp_path):
         shutil.rmtree(root)
     assert result.exit_code == 0, result.output
     assert "0 findings" in result.output
+
+
+def test_format_json_output():
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "a.py"), "wb") as f:
+            f.write(b"print 'hello'\n")
+        result = CliRunner().invoke(main, ["scan", root, "--format", "json"])
+    finally:
+        shutil.rmtree(root)
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.output)
+    assert payload["files"] == 1
+    assert payload["readiness"] == 0.0
+    assert payload["rules"] == {"PY3-PRINT": 1}
+    assert payload["findings"][0]["rule"] == "PY3-PRINT"
