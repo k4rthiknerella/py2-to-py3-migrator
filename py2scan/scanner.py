@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 import ast
+import io
 import os
+import tokenize
+from concurrent.futures import ProcessPoolExecutor
 
 from py2scan.findings import Finding
-from py2scan.rules import AST_RULES
+from py2scan.rules import RULES
 
 
 def iter_py_files(root):
@@ -24,16 +27,25 @@ def scan_file(root, rel):
     except SyntaxError as e:
         return [Finding(rel, e.lineno or 1, "PY3-PARSE", "blocker",
                         "does not parse under Python 2.7: %s" % e.msg)]
+    tokens = list(tokenize.generate_tokens(io.BytesIO(source).readline))
     findings = []
-    for rule in AST_RULES:
-        findings.extend(rule(rel, tree))
+    for rule in RULES:
+        findings.extend(rule(rel, tree, tokens))
     return findings
 
 
-def scan(root):
+def scan(root, jobs=4):
     files = list(iter_py_files(root))
+    if jobs <= 1 or len(files) <= 1:
+        results = [scan_file(root, rel) for rel in files]
+    else:
+        executor = ProcessPoolExecutor(max_workers=jobs)
+        try:
+            results = list(executor.map(scan_file, [root] * len(files), files))
+        finally:
+            executor.shutdown()
     findings = []
-    for rel in files:
-        findings.extend(scan_file(root, rel))
+    for r in results:
+        findings.extend(r)
     findings.sort(key=lambda f: f.key())
     return files, findings
