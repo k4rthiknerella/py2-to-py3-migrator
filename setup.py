@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="py2scan",
-    version="0.1.0",
+    version="0.2.0",
     description="Find what stops a Python 2 codebase from running on Python 3",
     packages=find_packages(exclude=["tests"]),
     python_requires="==2.7.*",
