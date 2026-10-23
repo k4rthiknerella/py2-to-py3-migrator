@@ -9,6 +9,7 @@ _TEXT_NEWLINE = re.compile(u"\r\n|\r|\n")
 # PEP 263, as Parser/tokenizer.c get_coding_spec reads it.
 _COOKIE = re.compile(br"^[ \t\f]*#.*?coding[:=][ \t]*([-\w.]+)")
 _BLANK_OR_COMMENT = re.compile(br"^[ \t\f]*(?:#|$)")
+text_type = type(u"")
 
 
 def _normal_name(name):
@@ -48,7 +49,7 @@ def decode(source):
         text = source.decode(encoding or "utf-8", "replace")
     except Exception:  # unknown codec, or a bytes-to-bytes one such as zlib
         text = None
-    if not isinstance(text, unicode):
+    if not isinstance(text, text_type):
         text = source.decode("utf-8", "replace")
     return text
 
