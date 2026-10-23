@@ -4,6 +4,7 @@ import functools
 import io
 import os
 import platform
+import stat
 import sys
 import tokenize
 
@@ -31,47 +32,93 @@ def _tokenize(source):
     return list(tokenize.generate_tokens(io.BytesIO(source).readline))
 
 
-def iter_py_files(root):
-    """Every .py file under root, relative and /-separated, skipping dot
-    directories."""
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
-        for name in sorted(filenames):
+def _relpath(full, root):
+    return os.path.relpath(full, root).replace(os.sep, "/")
+
+
+def _walk_entries(dirpath, root, files, problems):
+    """Recurses into dirpath, adding every .py file found to files and
+    every unreadable or non-file/non-dir entry to problems (R5: nothing
+    under the scan root - directory or file - is dropped silently)."""
+    try:
+        names = sorted(os.listdir(dirpath))
+    except OSError as e:
+        problems.append((_relpath(dirpath, root), str(e)))
+        return
+    for name in names:
+        full = os.path.join(dirpath, name)
+        rel = _relpath(full, root)
+        try:
+            st = os.stat(full)
+        except OSError as e:
+            problems.append((rel, str(e)))
+            continue
+        if stat.S_ISDIR(st.st_mode):
+            if not name.startswith("."):
+                _walk_entries(full, root, files, problems)
+        elif stat.S_ISREG(st.st_mode):
             if name.endswith(".py"):
-                full = os.path.join(dirpath, name)
-                yield os.path.relpath(full, root).replace(os.sep, "/")
+                files.append(rel)
+        else:
+            problems.append((rel, "not a regular file or directory"))
+
+
+def iter_py_files(root):
+    """(files, problems): every .py file under root (sorted, relative,
+    /-separated, skipping dot directories), and every entry that couldn't
+    be scanned - an unreadable directory or file, or a non-file/non-dir
+    entry - each as (relpath, reason). R5."""
+    files = []
+    problems = []
+    _walk_entries(root, root, files, problems)
+    files.sort()
+    problems.sort()
+    return files, problems
 
 
 def scan_file(root, rel):
-    with open(os.path.join(root, rel), "rb") as f:
-        source = f.read()
+    """(findings, problem): problem is None, or the reason rel couldn't
+    be read (R5) - in which case findings is always []."""
+    try:
+        with open(os.path.join(root, rel), "rb") as f:
+            source = f.read()
+    except (IOError, OSError) as e:
+        return [], str(e)
     try:
         tree = ast.parse(source, rel)
     except SyntaxError as e:
         return [Finding(rel, e.lineno or 1, "PY3-PARSE", "blocker",
                         "does not parse under Python %s: %s"
-                        % (platform.python_version(), e.msg))]
+                        % (platform.python_version(), e.msg))], None
     tokens = _tokenize(source)
     findings = []
     for rule in AST_RULES:
         findings.extend(rule(rel, tree))
     for rule in TOKEN_RULES:
         findings.extend(rule(rel, tokens))
-    return findings
+    return findings, None
 
 
 def scan(root, jobs=4, config=None):
-    files = list(iter_py_files(root))
+    """(files, findings, problems): problems (R5) is every entry under
+    root that couldn't be scanned, each as (relpath, reason) - from
+    walking the tree (an unreadable directory, or a non-file/non-dir
+    entry) or from reading a listed .py file (permission denied, etc)."""
+    files, problems = iter_py_files(root)
     findings = []
     if files:
         executor = ProcessPoolExecutor(max_workers=jobs)
         try:
             worker = functools.partial(scan_file, root)
-            for file_findings in executor.map(worker, files):
+            for rel, (file_findings, problem) in zip(
+                    files, executor.map(worker, files)):
                 findings.extend(file_findings)
+                if problem is not None:
+                    problems.append((rel, problem))
         finally:
             executor.shutdown()
     findings.sort(key=lambda f: (f.file, f.line, f.rule, f.message))
+    problems.sort()
     if config is not None:
         findings = config_module.apply(findings, config)
-    return files, findings
+    return files, findings, problems

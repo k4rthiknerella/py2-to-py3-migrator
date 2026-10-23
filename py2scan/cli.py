@@ -28,8 +28,8 @@ def main():
 def scan_cmd(path, output_format, config_path, jobs, html_path):
     """Scan every .py file under PATH."""
     config = load_config(config_path) if config_path else None
-    files, findings = scan(path, jobs=jobs, config=config)
-    summary = summarize(files, findings)
+    files, findings, problems = scan(path, jobs=jobs, config=config)
+    summary = summarize(files, findings, problems)
 
     if output_format == "json":
         # sort_keys: CPython 2.7 dict order is hash-bucket order, 3.7+ is
@@ -39,11 +39,17 @@ def scan_cmd(path, output_format, config_path, jobs, html_path):
     else:
         for f in findings:
             click.echo(u"%s:%d: %s %s" % (f.file, f.line, f.rule, f.message))
+        for path_, reason in problems:
+            click.echo(u"%s: could not be read: %s" % (path_, reason))
         click.echo(u"%d files, %d findings" % (len(files), len(findings)))
 
     if html_path:
         with io.open(html_path, "w", encoding="utf-8") as f:
             f.write(render_html(path, findings, summary))
 
+    # R5: a scan root with an unreadable entry always exits 2, marking the
+    # report incomplete, even when blockers were also found.
+    if problems:
+        sys.exit(2)
     if any(f.severity == "blocker" for f in findings):
         sys.exit(1)

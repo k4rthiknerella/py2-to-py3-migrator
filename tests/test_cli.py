@@ -4,6 +4,7 @@ import os
 import shutil
 import tempfile
 
+import pytest
 from click.testing import CliRunner
 
 from py2scan.cli import main
@@ -90,6 +91,42 @@ def test_scan_html_writes_a_report_file():
     assert result.exit_code == 1, result.output
     assert "PY3-BUILTIN" in html
     assert "unicode(&#39;hello&#39;)" in html
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"),
+                    reason="platform has no symlink support")
+def test_scan_exits_2_and_takes_priority_over_a_blocker_exit_1():
+    # R5: a scan root with both an unreadable entry and a blocker exits 2,
+    # not 1 - the never-fully-silent guarantee on unreadable entries wins.
+    root = make_tree()
+    try:
+        os.symlink(os.path.join(root, "missing-target"),
+                   os.path.join(root, "dangling.py"))
+        result = CliRunner().invoke(
+            main, ["scan", "--format", "json", root])
+    finally:
+        shutil.rmtree(root)
+    assert result.exit_code == 2, result.output
+    payload = json.loads(result.output)
+    assert payload["complete"] is False
+    assert len(payload["problems"]) == 1
+    assert payload["problems"][0]["path"] == "dangling.py"
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"),
+                    reason="platform has no symlink support")
+def test_scan_text_format_reports_the_unreadable_entry():
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "clean.py"), "wb") as f:
+            f.write(b"x = 1\n")
+        os.symlink(os.path.join(root, "missing-target"),
+                   os.path.join(root, "dangling.py"))
+        result = CliRunner().invoke(main, ["scan", root])
+    finally:
+        shutil.rmtree(root)
+    assert result.exit_code == 2, result.output
+    assert "dangling.py: could not be read:" in result.output
 
 
 def test_scan_config_disables_a_rule():

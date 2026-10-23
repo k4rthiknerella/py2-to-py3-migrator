@@ -51,7 +51,7 @@ derivation recorded. Not started; folded into the same R6/R7/R8 matrix work.
 ## Units
 | Unit | Owner | Runtime today | Effective target | Step | Level | Blockers (auto / manual) | Size | Next |
 |---|---|---|---|---|---|---|---|---|
-| py2scan | Karthik Nerella | 2.7.18 | 3.14 | 2.7.18 → 3.14 | L2 | 0 auto / 4 manual (R5, R6-R10 matrix, security scan, full What's New sweep) | L | `fix py2scan` |
+| py2scan | Karthik Nerella | 2.7.18 | 3.14 | 2.7.18 → 3.14 | L2 | 0 auto / 3 manual (R6-R10 matrix, security scan, full What's New sweep) | L | `fix py2scan` |
 
 L2 is proved by `.py-migrate/compile_check.py`, committed, run on both sides —
 see Evidence. No consumers import py2scan as a library (it is a CLI-only
@@ -170,9 +170,50 @@ Waves: none — one unit, no import graph.
   test for. Also doesn't handle 2.7's tuple-parameter unpacking
   (`def f((a, b)): ...`) — rare, Python-2-only syntax.
 
+**Resolved, commit `pending`:**
+- R5: `py2scan/scanner.py` walked the tree with `os.path.isdir`/`isfile`,
+  which silently swallow `OSError` and return `False` — a permission-denied
+  directory or file simply vanished from the file list with no trace, and
+  the report claimed a complete scan when it wasn't one. Fixed with
+  `_walk_entries`, which calls `os.stat` directly (it raises, so the real
+  reason is caught instead of lost) and classifies each entry: an `OSError`
+  from `os.listdir` or `os.stat` records `(relpath, str(e))`; a stat that
+  succeeds but is neither `S_ISDIR` nor `S_ISREG` (a FIFO, a dangling
+  symlink once `os.stat` follows it into `ENOENT`, a socket) records
+  `(relpath, "not a regular file or directory")` — nothing under the scan
+  root is dropped silently, matching R5's wording exactly. `iter_py_files`
+  now returns `(files, problems)`; `scan_file` returns `(findings, problem)`
+  so a mid-scan read failure (e.g. a `.py` file that becomes unreadable
+  after being listed) is reported the same way as a listing-time failure;
+  `scan` returns `(files, findings, problems)`. `report.summarize` gained
+  `complete`/`problems` fields (`complete` is `not problems`); `cli.py`
+  prints each problem in text mode and exits 2 whenever `problems` is
+  non-empty — checked *before* the existing blocker-exit-1 check, so a
+  scan root with both an unreadable entry and a blocker exits 2, not 1, per
+  R5's "still exit 2 even if blockers were found."
+
+  9 new tests: `test_unreadable_py_file_is_a_problem_not_a_crash` and
+  `test_unreadable_directory_is_listed_as_a_problem` in
+  `tests/test_scanner.py` (both `skipif`'d when running as root — root's
+  `CAP_DAC_OVERRIDE` bypasses permission checks entirely, so `chmod 0` would
+  prove nothing there, a real gap when this repo's own test Docker image
+  runs as root by default); `test_dangling_symlink_is_a_problem_not_a_crash`
+  and `test_non_regular_entry_is_a_problem_not_a_crash` in the same file,
+  using a dangling symlink and `os.mkfifo` — both fail at the type/ENOENT
+  level, not the permission level, so they exercise the same code path in
+  every environment including root; `test_no_problems_is_a_complete_report`,
+  `test_problems_make_the_report_incomplete`, and
+  `test_problems_are_sorted_by_path` in `tests/test_report.py` against
+  `summarize` directly; `test_scan_exits_2_and_takes_priority_over_a_blocker_exit_1`
+  and `test_scan_text_format_reports_the_unreadable_entry` in
+  `tests/test_cli.py`, end to end through `CliRunner`. Count verified by
+  `git diff | grep -c "^+def test_"` per file, not recalled. Full suite:
+  104 passed, 2 skipped (root-only skips) on 2.7.18 via Docker (root);
+  101 passed, 5 skipped on 3.14.7 (non-root venv, so the two root-skipped
+  tests ran there instead and passed) — both skip counts accounted for by
+  environment, not by a test that can't run anywhere.
+
 **Still open:**
-- R5 (exit code 2 and incomplete-report marking for unreadable entries) —
-  not started.
 - R6/R7/R8/R9/R10 (multi-version readiness matrix, 3.6–3.15, final-release
   interpreters only with exact patch versions recorded, expanded PY3-STDLIB
   and PY3-BUILTIN derivation, static-knowledge-not-runtime-dependency
@@ -295,6 +336,10 @@ any other process (no pickle, cache, queue, or database).
 | 2026-10-22 | 8f48071 | py2scan | 2.7.18→3.14 | (defect-input receipt) | `ast.parse(<input>)` for each of the 7 defect-list inputs, run directly against both real interpreters (2.7.18 via Docker stdin, 3.14.7 via the isolated venv) | all 7 parse successfully on 2.7.18, all 7 raise `SyntaxError` on 3.14.7 — confirms the defect-list claim with a receipt, not an assertion |
 | 2026-10-22 | 8f48071 | py2scan | 2.7.18→3.14 | (R2) | full suite on both real interpreters after implementing R2 | `90 passed` on 2.7.18; `85 passed, 5 skipped` on 3.14.7 |
 | 2026-10-22 | 8f48071 | py2scan | 2.7.18→3.14 | (flake8, not a level) | `flake8 --max-complexity 10 py2scan tests` under both real interpreters, after R2 and T12 fixes | 0 violations of any kind, both interpreters |
+| 2026-10-22 | 054d2b2 | py2scan | 2.7.18→3.14 | (R3) | full suite on both real interpreters after implementing R3's scope-chain rewrite of `check_builtin_use` (row added late — missed when the commit landed) | `97 passed` on 2.7.18; `92 passed, 5 skipped` on 3.14.7 |
+| 2026-10-22 | 054d2b2 | py2scan | 2.7.18→3.14 | (flake8, not a level) | `flake8 --max-complexity 10 py2scan tests` under both real interpreters, after R3 (including the closures-vs-top-level-functions complexity fix) | 0 violations of any kind, both interpreters |
+| 2026-10-22 | pending | py2scan | 2.7.18→3.14 | (R5) | full suite on both real interpreters after implementing R5 | `104 passed, 2 skipped` on 2.7.18 (Docker, root — 2 root-dependent tests skipped); `101 passed, 5 skipped` on 3.14.7 (non-root venv — those 2 ran and passed; same 5 `PY2_ONLY_SYNTAX` skips as before) |
+| 2026-10-22 | pending | py2scan | 2.7.18→3.14 | (flake8, not a level) | `flake8 --max-complexity 10 py2scan tests` under both real interpreters, after R5 | 0 violations of any kind, both interpreters |
 
 ## Decisions
 - 2026-10-22, owner: `.md`-commit exception for `MIGRATION.md` and
@@ -310,8 +355,7 @@ any other process (no pickle, cache, queue, or database).
   R6 on multi-version readiness judging). R2 (ImportError-guarded
   PY3-STDLIB) and R3 (PY3-BUILTIN scoping) are implemented — see Blockers,
   Resolved. R4 (deployment scope) is superseded by R9 below. R5 (exit code
-  2 / unreadable entries) remains a rules-engine change for `fix`, not yet
-  implemented.
+  2 / unreadable entries) is implemented — see Blockers, Resolved.
 - 2026-10-22, architect (relaying owner decisions), spec rulings R7–R10:
   recorded in full in session history; cited inline above where they refine
   R1/R6/R8 (R9's "no network, no required extra interpreter at scan time"

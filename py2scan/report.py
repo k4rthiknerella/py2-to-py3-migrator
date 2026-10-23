@@ -29,6 +29,17 @@ code { white-space: pre; }
 <h1>py2scan report</h1>
 <p>Readiness: <strong>{{ "%.1f"|format(summary.readiness) }}%</strong>
    ({{ summary.files }} files scanned)</p>
+{% if not summary.complete %}
+<p class="blocker"><strong>Incomplete scan</strong>:
+   {{ summary.problems|length }} entries under the scan root could not
+   be read.</p>
+<table>
+<tr><th>Path</th><th>Reason</th></tr>
+{% for p in summary.problems %}
+<tr><td>{{ p.path }}</td><td>{{ p.reason }}</td></tr>
+{% endfor %}
+</table>
+{% endif %}
 <table>
 <tr><th>Rule</th><th>Findings</th></tr>
 {% for rule, count in rule_counts %}
@@ -58,7 +69,8 @@ def _sort_key(f):
     return (f.file, f.line, f.rule, f.message)
 
 
-def summarize(files, findings):
+def summarize(files, findings, problems=None):
+    problems = problems or []
     findings = sorted(findings, key=_sort_key)
 
     if files:
@@ -75,6 +87,9 @@ def summarize(files, findings):
         "readiness": readiness,
         "rules": dict(rule_counts),
         "findings": [f.to_dict() for f in findings],
+        "complete": not problems,
+        "problems": [{"path": path, "reason": reason}
+                     for path, reason in sorted(problems)],
     }
 
 

@@ -80,6 +80,25 @@ def test_read_lines_defaults_to_utf8_without_a_cookie():
     assert lines[0] == u"x = 'é'"
 
 
+def test_no_problems_is_a_complete_report():
+    summary = summarize(["a.py"], [])
+    assert summary["complete"] is True
+    assert summary["problems"] == []
+
+
+def test_problems_make_the_report_incomplete():
+    summary = summarize(["a.py"], [],
+                        problems=[("bad.py", "Permission denied")])
+    assert summary["complete"] is False
+    assert summary["problems"] == [
+        {"path": "bad.py", "reason": "Permission denied"}]
+
+
+def test_problems_are_sorted_by_path():
+    summary = summarize(["a.py"], [], problems=[("z.py", "x"), ("a.py", "y")])
+    assert [p["path"] for p in summary["problems"]] == ["a.py", "z.py"]
+
+
 def test_render_html_contains_readiness_rule_counts_and_escaped_source():
     root = tempfile.mkdtemp()
     try:

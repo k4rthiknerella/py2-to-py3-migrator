@@ -4,8 +4,15 @@ import shutil
 import sys
 import tempfile
 
+import pytest
+
 from py2scan.config import Config
 from py2scan.scanner import scan, scan_file
+
+# chmod 0 proves nothing when the test runs as root: CAP_DAC_OVERRIDE makes
+# root bypass permission checks entirely, so root would read the file fine
+# and no OSError would ever reach scanner.py's except clause.
+_IS_ROOT = hasattr(os, "getuid") and os.getuid() == 0
 
 
 def make_tree():
@@ -36,9 +43,10 @@ def test_print_statement_is_a_blocker_on_both_interpreters():
     try:
         with open(os.path.join(root, "m.py"), "wb") as f:
             f.write(b"print 'hi'\n")
-        findings = scan_file(root, "m.py")
+        findings, problem = scan_file(root, "m.py")
     finally:
         shutil.rmtree(root)
+    assert problem is None
     assert len(findings) == 1
     assert findings[0].severity == "blocker"
     expected_rule = "PY3-PARSE" if sys.version_info[0] >= 3 else "PY3-PRINT"
@@ -54,9 +62,10 @@ def _assert_blocker_on_both_interpreters(source, rule_on_27):
     try:
         with open(os.path.join(root, "m.py"), "wb") as f:
             f.write(source)
-        findings = scan_file(root, "m.py")
+        findings, problem = scan_file(root, "m.py")
     finally:
         shutil.rmtree(root)
+    assert problem is None
     assert len(findings) == 1
     assert findings[0].severity == "blocker"
     expected = "PY3-PARSE" if sys.version_info[0] >= 3 else rule_on_27
@@ -91,9 +100,10 @@ def test_except_comma_is_byte_identical_across_interpreters():
     try:
         with open(os.path.join(root, "m.py"), "wb") as f:
             f.write(b"try:\n    pass\nexcept Exception, e:\n    pass\n")
-        findings = scan_file(root, "m.py")
+        findings, problem = scan_file(root, "m.py")
     finally:
         shutil.rmtree(root)
+    assert problem is None
     assert len(findings) == 1
     assert findings[0].rule == "PY3-EXCEPT-COMMA"
     assert findings[0].severity == "blocker"
@@ -102,12 +112,13 @@ def test_except_comma_is_byte_identical_across_interpreters():
 def test_jobs_does_not_affect_output():
     root = make_tree()
     try:
-        files1, findings1 = scan(root, jobs=1)
-        files4, findings4 = scan(root, jobs=4)
+        files1, findings1, problems1 = scan(root, jobs=1)
+        files4, findings4, problems4 = scan(root, jobs=4)
     finally:
         shutil.rmtree(root)
     assert files1 == files4
     assert as_dicts(findings1) == as_dicts(findings4)
+    assert problems1 == problems4 == []
 
 
 def test_a_broken_file_does_not_affect_scanning_of_others():
@@ -121,9 +132,10 @@ def test_a_broken_file_does_not_affect_scanning_of_others():
             f.write(b"def f(:\n")
         with open(os.path.join(root, "ok.py"), "wb") as f:
             f.write(b"x = unicode('hi')\n")
-        files, findings = scan(root, jobs=4)
+        files, findings, problems = scan(root, jobs=4)
     finally:
         shutil.rmtree(root)
+    assert problems == []
     by_file = {}
     for f in findings:
         by_file.setdefault(f.file, []).append(f.rule)
@@ -143,8 +155,85 @@ def test_config_is_applied_end_to_end():
         with open(os.path.join(root, "b.py"), "wb") as fh:
             fh.write(b"y = 1 / 2\n")
         cfg = Config(disabled=["PY3-BUILTIN"], severity={})
-        files, findings = scan(root, jobs=1, config=cfg)
+        files, findings, problems = scan(root, jobs=1, config=cfg)
     finally:
         shutil.rmtree(root)
+    assert problems == []
     assert "PY3-BUILTIN" not in [f.rule for f in findings]
     assert "PY3-DIVISION" in [f.rule for f in findings]
+
+
+@pytest.mark.skipif(_IS_ROOT, reason="root bypasses permission checks")
+def test_unreadable_py_file_is_a_problem_not_a_crash():
+    # R5: scan_file reports the reason instead of raising, and never
+    # fabricates findings for a file it couldn't read.
+    root = tempfile.mkdtemp()
+    try:
+        path = os.path.join(root, "secret.py")
+        with open(path, "wb") as f:
+            f.write(b"x = 1\n")
+        os.chmod(path, 0o000)
+        findings, problem = scan_file(root, "secret.py")
+    finally:
+        os.chmod(path, 0o644)
+        shutil.rmtree(root)
+    assert findings == []
+    assert problem is not None
+
+
+@pytest.mark.skipif(_IS_ROOT, reason="root bypasses permission checks")
+def test_unreadable_directory_is_listed_as_a_problem():
+    # R5: an unreadable directory is listed with its reason; it does not
+    # silently vanish from the file list, and it does not abort the scan
+    # of files elsewhere under the root.
+    root = tempfile.mkdtemp()
+    try:
+        blocked = os.path.join(root, "blocked")
+        os.mkdir(blocked)
+        os.chmod(blocked, 0o000)
+        with open(os.path.join(root, "ok.py"), "wb") as f:
+            f.write(b"x = 1\n")
+        files, findings, problems = scan(root, jobs=1)
+    finally:
+        os.chmod(blocked, 0o755)
+        shutil.rmtree(root)
+    assert files == ["ok.py"]
+    assert len(problems) == 1
+    assert problems[0][0] == "blocked"
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"),
+                    reason="platform has no symlink support")
+def test_dangling_symlink_is_a_problem_not_a_crash():
+    # A dangling symlink fails os.stat with ENOENT regardless of who runs
+    # the scan - unlike permission denial, this is not root-bypassable, so
+    # it exercises the per-entry OSError branch in every environment.
+    root = tempfile.mkdtemp()
+    try:
+        os.symlink(os.path.join(root, "missing-target"),
+                   os.path.join(root, "dangling.py"))
+        with open(os.path.join(root, "ok.py"), "wb") as f:
+            f.write(b"x = 1\n")
+        files, findings, problems = scan(root, jobs=1)
+    finally:
+        shutil.rmtree(root)
+    assert files == ["ok.py"]
+    assert len(problems) == 1
+    assert problems[0][0] == "dangling.py"
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"),
+                    reason="platform has no mkfifo support")
+def test_non_regular_entry_is_a_problem_not_a_crash():
+    # R5: a FIFO under the scan root is neither a file py2scan can scan nor
+    # a directory it can recurse into; it must be listed, not dropped.
+    root = tempfile.mkdtemp()
+    try:
+        os.mkfifo(os.path.join(root, "pipe.py"))
+        with open(os.path.join(root, "ok.py"), "wb") as f:
+            f.write(b"x = 1\n")
+        files, findings, problems = scan(root, jobs=1)
+    finally:
+        shutil.rmtree(root)
+    assert files == ["ok.py"]
+    assert problems == [("pipe.py", "not a regular file or directory")]
