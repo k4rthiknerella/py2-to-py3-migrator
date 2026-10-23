@@ -54,11 +54,16 @@ code { white-space: pre; }
 """
 
 
+def _sort_key(f):
+    return (f.file, f.line, f.rule, f.message)
+
+
 def summarize(files, findings):
-    findings = sorted(findings, key=lambda f: (f.file, f.line, f.rule, f.message))
+    findings = sorted(findings, key=_sort_key)
 
     if files:
-        blocker_files = set(f.file for f in findings if f.severity == "blocker")
+        blocker_files = set(
+            f.file for f in findings if f.severity == "blocker")
         readiness = 100.0 * (len(files) - len(blocker_files)) / len(files)
     else:
         readiness = 100.0
@@ -78,11 +83,12 @@ def render_html(root, findings, summary):
 
     def source_line(finding):
         if finding.file not in lines_by_file:
-            lines_by_file[finding.file] = read_lines(os.path.join(root, finding.file))
+            lines_by_file[finding.file] = read_lines(
+                os.path.join(root, finding.file))
         return lines_by_file[finding.file][finding.line - 1]
 
     findings_by_file = collections.OrderedDict()
-    for f in sorted(findings, key=lambda f: (f.file, f.line, f.rule, f.message)):
+    for f in sorted(findings, key=_sort_key):
         findings_by_file.setdefault(f.file, []).append(f)
 
     template = _ENV.from_string(_TEMPLATE)

@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 import ast
-import io
-import tokenize
+import sys
 
+import pytest
+
+from py2scan.scanner import _tokenize
 from py2scan.rules import (
     check_backtick,
     check_builtin_use,
@@ -20,15 +22,25 @@ from py2scan.rules import (
 )
 
 
+# Python-2-only syntax (print/exec statements, backticks, raise-with-comma)
+# can never ast.parse successfully on Python 3 - scanner.scan_file catches
+# that SyntaxError and reports PY3-PARSE before these rule functions would
+# ever run, which is the accepted, recorded divergence R1 sanctions. There's
+# nothing to port: the source literally cannot reach the rule on Python 3.
+PY2_ONLY_SYNTAX = pytest.mark.skipif(
+    sys.version_info[0] >= 3, reason="syntax is Python-2-only; see R1")
+
+
 def rules(fn, source):
     return [(f.line, f.rule) for f in fn("m.py", ast.parse(source))]
 
 
 def token_rules(fn, source):
-    tokens = list(tokenize.generate_tokens(io.BytesIO(source).readline))
+    tokens = _tokenize(source.encode("utf-8"))
     return [(f.line, f.rule) for f in fn("m.py", tokens)]
 
 
+@PY2_ONLY_SYNTAX
 def test_print_statement_is_found():
     assert rules(check_print, "x = 1\nprint x\n") == [(2, "PY3-PRINT")]
 
@@ -38,6 +50,7 @@ def test_print_function_is_not_found():
     assert rules(check_print, src) == []
 
 
+@PY2_ONLY_SYNTAX
 def test_exec_statement_is_found():
     assert rules(check_exec, "exec 'x = 1'\n") == [(1, "PY3-EXEC-STMT")]
 
@@ -71,11 +84,13 @@ def test_float_is_not_found():
 
 
 def test_long_suffix_is_found():
-    assert token_rules(check_long_suffix, "x = 10L\n") == [(1, "PY3-LONG-SUFFIX")]
+    assert token_rules(check_long_suffix, "x = 10L\n") == \
+        [(1, "PY3-LONG-SUFFIX")]
 
 
 def test_lowercase_long_suffix_is_found():
-    assert token_rules(check_long_suffix, "x = 10l\n") == [(1, "PY3-LONG-SUFFIX")]
+    assert token_rules(check_long_suffix, "x = 10l\n") == \
+        [(1, "PY3-LONG-SUFFIX")]
 
 
 def test_plain_int_has_no_long_suffix():
@@ -113,16 +128,20 @@ def test_except_tuple_with_comma_name_is_found():
     assert token_rules(check_except_comma, src) == [(3, "PY3-EXCEPT-COMMA")]
 
 
+@PY2_ONLY_SYNTAX
 def test_backtick_is_found():
     assert rules(check_backtick, "y = `x`\n") == [(1, "PY3-BACKTICK")]
 
 
+@PY2_ONLY_SYNTAX
 def test_raise_comma_is_found():
     assert rules(check_raise_comma, "raise E, v\n") == [(1, "PY3-RAISE-COMMA")]
 
 
+@PY2_ONLY_SYNTAX
 def test_raise_comma_with_traceback_is_found():
-    assert rules(check_raise_comma, "raise E, v, tb\n") == [(1, "PY3-RAISE-COMMA")]
+    assert rules(check_raise_comma, "raise E, v, tb\n") == \
+        [(1, "PY3-RAISE-COMMA")]
 
 
 def test_raise_without_comma_is_not_found():
@@ -134,8 +153,8 @@ def test_raise_call_is_not_found():
 
 
 def test_dict_iteritems_is_found():
-    assert rules(check_dict_iter, "for k, v in d.iteritems():\n    pass\n") == \
-        [(1, "PY3-DICT-ITER")]
+    src = "for k, v in d.iteritems():\n    pass\n"
+    assert rules(check_dict_iter, src) == [(1, "PY3-DICT-ITER")]
 
 
 def test_dict_iterkeys_is_found():
@@ -186,7 +205,8 @@ def test_division_augassign_is_found():
 
 
 def test_builtin_use_is_found():
-    assert rules(check_builtin_use, "x = unicode('a')\n") == [(1, "PY3-BUILTIN")]
+    assert rules(check_builtin_use, "x = unicode('a')\n") == \
+        [(1, "PY3-BUILTIN")]
 
 
 def test_builtin_use_is_suppressed_when_module_defines_it():
@@ -209,7 +229,8 @@ def test_unrelated_builtin_is_not_found():
 
 
 def test_stdlib_import_is_found():
-    assert rules(check_stdlib_import, "import urllib2\n") == [(1, "PY3-STDLIB")]
+    assert rules(check_stdlib_import, "import urllib2\n") == \
+        [(1, "PY3-STDLIB")]
 
 
 def test_stdlib_import_from_is_found():
@@ -218,11 +239,13 @@ def test_stdlib_import_from_is_found():
 
 
 def test_stdlib_import_with_alias_is_found():
-    assert rules(check_stdlib_import, "import urllib2 as u2\n") == [(1, "PY3-STDLIB")]
+    assert rules(check_stdlib_import, "import urllib2 as u2\n") == \
+        [(1, "PY3-STDLIB")]
 
 
 def test_multi_import_line_flags_only_the_stdlib_name():
-    assert rules(check_stdlib_import, "import os, urllib2 as u2\n") == [(1, "PY3-STDLIB")]
+    assert rules(check_stdlib_import, "import os, urllib2 as u2\n") == \
+        [(1, "PY3-STDLIB")]
 
 
 def test_two_stdlib_names_on_one_import_line_is_two_findings():

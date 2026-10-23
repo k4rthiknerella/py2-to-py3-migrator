@@ -10,10 +10,14 @@ from py2scan.cli import main
 
 
 def make_tree():
+    # unicode(), not a print statement: print is Python-2-only syntax, so
+    # ast.parse itself would fail on Python 3 and this would report
+    # PY3-PARSE instead of exercising the rule these tests are actually
+    # about. See R1 and tests/test_scanner.py's divergence test.
     root = tempfile.mkdtemp()
     os.mkdir(os.path.join(root, "pkg"))
     with open(os.path.join(root, "pkg", "a.py"), "wb") as f:
-        f.write(b"print 'hello'\n")
+        f.write(b"x = unicode('hello')\n")
     with open(os.path.join(root, "b.py"), "wb") as f:
         f.write(b"x = 1\n")
     return root
@@ -25,7 +29,7 @@ def test_scan_reports_findings_with_relative_paths():
         result = CliRunner().invoke(main, ["scan", root])
     finally:
         shutil.rmtree(root)
-    assert "pkg/a.py:1: PY3-PRINT" in result.output
+    assert "pkg/a.py:1: PY3-BUILTIN" in result.output
     assert "2 files, 1 findings" in result.output
 
 
@@ -58,15 +62,17 @@ def test_scan_format_json():
     payload = json.loads(result.output)
     assert payload["files"] == 2
     assert payload["readiness"] == 50.0
-    assert payload["rules"] == {"PY3-PRINT": 1}
+    assert payload["rules"] == {"PY3-BUILTIN": 1}
     assert payload["findings"][0]["file"] == "pkg/a.py"
 
 
 def test_scan_jobs_flag_does_not_change_output():
     root = make_tree()
     try:
-        result1 = CliRunner().invoke(main, ["scan", "--format", "json", "--jobs", "1", root])
-        result4 = CliRunner().invoke(main, ["scan", "--format", "json", "--jobs", "4", root])
+        result1 = CliRunner().invoke(
+            main, ["scan", "--format", "json", "--jobs", "1", root])
+        result4 = CliRunner().invoke(
+            main, ["scan", "--format", "json", "--jobs", "4", root])
     finally:
         shutil.rmtree(root)
     assert result1.output == result4.output
@@ -82,15 +88,15 @@ def test_scan_html_writes_a_report_file():
     finally:
         shutil.rmtree(root)
     assert result.exit_code == 1, result.output
-    assert "PY3-PRINT" in html
-    assert "print &#39;hello&#39;" in html
+    assert "PY3-BUILTIN" in html
+    assert "unicode(&#39;hello&#39;)" in html
 
 
 def test_scan_config_disables_a_rule():
     root = make_tree()
     config_path = os.path.join(root, "py2scan.yaml")
     with open(config_path, "wb") as f:
-        f.write(b"disable: [PY3-PRINT]\n")
+        f.write(b"disable: [PY3-BUILTIN]\n")
     try:
         result = CliRunner().invoke(
             main, ["scan", "--format", "json", "--config", config_path, root])

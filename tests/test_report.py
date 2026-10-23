@@ -47,8 +47,10 @@ def test_findings_are_plain_dicts():
 
 
 def test_findings_tie_broken_by_message_when_file_line_rule_match():
-    findings = [Finding("a.py", 1, "PY3-STDLIB", "blocker", "import of ConfigParser"),
-                Finding("a.py", 1, "PY3-STDLIB", "blocker", "import of urllib2")]
+    findings = [
+        Finding("a.py", 1, "PY3-STDLIB", "blocker", "import of ConfigParser"),
+        Finding("a.py", 1, "PY3-STDLIB", "blocker", "import of urllib2"),
+    ]
     summary = summarize(["a.py"], findings)
     messages = [f["message"] for f in summary["findings"]]
     assert messages == ["import of ConfigParser", "import of urllib2"]
@@ -85,7 +87,8 @@ def test_render_html_contains_readiness_rule_counts_and_escaped_source():
             f.write(b"print 'hi' if 1 < 2 else None\n")
         files = ["a.py"]
         findings = [Finding("a.py", 1, "PY3-PRINT", "blocker",
-                            "print statement; Python 3 has only the print() function")]
+                            "print statement; Python 3 has only the "
+                            "print() function")]
         summary = summarize(files, findings)
         html = render_html(root, findings, summary)
     finally:
