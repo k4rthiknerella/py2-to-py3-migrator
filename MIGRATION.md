@@ -926,7 +926,7 @@ Python 3 anyway, since `ast.parse` already raises first.
 Full suite: 142 passed, 2 skipped (2.7.18); 135 passed, 9 skipped
 (3.14.7, 3.14.9). flake8 `--max-complexity 10` clean on all three.
 
-**Resolved, commit `pending`: `file_readiness`, closing R6's "for each
+**Resolved, commit `858728c`: `file_readiness`, closing R6's "for each
 file, the report says which versions it is ready for" - AutoSteer CI's
 own gloss on R6, confirmed as a real gap, not a misreading.** Before
 this: `summarize()`'s `"findings"` list only ever contains files that
@@ -1129,9 +1129,9 @@ any other process (no pickle, cache, queue, or database).
 | 2026-10-23 | 4e52811 | py2scan | (`PY3-UR-STRING`/`PY3-UNICODE-ESCAPE` fix, full suite) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), 3.14.9 (Docker `py2scan-test314`) | `142 passed, 2 skipped` on 2.7.18; `135 passed, 9 skipped` on 3.14.7 and 3.14.9 |
 | 2026-10-23 | 4e52811 | py2scan | (`PY3-UR-STRING`/`PY3-UNICODE-ESCAPE` fix, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker, ad hoc `flake8<4`), 3.14.7 (Homebrew venv), and 3.14.9 (Docker `py2scan-test314`, ad hoc `flake8`) | 0 violations, all three |
 | 2026-10-23 | n/a (AutoSteer CI notice, no code change yet) | py2scan | (AutoSteer CI finding, R6 "named nowhere") | AutoSteer CI run against the real stdlib and the 11-case hostile input set | stdlib: 623/1104 files (2.7 side), 640/1104 (3.14 side) named nowhere in the JSON report; hostile: 11/11 cases' `ok.py` named nowhere |
-| 2026-10-23 | pending | py2scan | (`file_readiness` fix) | real reproduction of `hostile/nul_byte` (`ok.py` + `t.py`), `python -m py2scan scan --format json` | `file_readiness` = `{"ok.py": [all 10 judged versions], "t.py": []}` — both files now named |
-| 2026-10-23 | pending | py2scan | (`file_readiness` fix, full suite) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), 3.14.9 (Docker `py2scan-test314`) | `146 passed, 2 skipped` on 2.7.18; `139 passed, 9 skipped` on 3.14.7 and 3.14.9 |
-| 2026-10-23 | pending | py2scan | (`file_readiness` fix, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker, ad hoc `flake8<4`), 3.14.7 (Homebrew venv), and 3.14.9 (Docker `py2scan-test314`, ad hoc `flake8`) | 0 violations, all three |
+| 2026-10-23 | 858728c | py2scan | (`file_readiness` fix) | real reproduction of `hostile/nul_byte` (`ok.py` + `t.py`), `python -m py2scan scan --format json` | `file_readiness` = `{"ok.py": [all 10 judged versions], "t.py": []}` — both files now named |
+| 2026-10-23 | 858728c | py2scan | (`file_readiness` fix, full suite) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), 3.14.9 (Docker `py2scan-test314`) | `146 passed, 2 skipped` on 2.7.18; `139 passed, 9 skipped` on 3.14.7 and 3.14.9 |
+| 2026-10-23 | 858728c | py2scan | (`file_readiness` fix, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker, ad hoc `flake8<4`), 3.14.7 (Homebrew venv), and 3.14.9 (Docker `py2scan-test314`, ad hoc `flake8`) | 0 violations, all three |
 
 ## Decisions
 - 2026-10-22, owner: `.md`-commit exception for `MIGRATION.md` and
