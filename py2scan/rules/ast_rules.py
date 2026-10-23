@@ -50,41 +50,43 @@ def _has_future_name(tree, name):
     return False
 
 
-def check_print(path, tree, tokens):
+def check_print(path, tree, tokens, versions):
     if _has_future_name(tree, "print_function"):
         # Every print_stmt parso found here is really a call expression
         # under real CPython; none of them are Python-3 blockers.
         return
     for node in _nodes(tree, "print_stmt"):
         yield Finding(path, node.start_pos[0], "PY3-PRINT", "blocker",
-                      "print statement; Python 3 has only the print() function")
+                      "print statement; Python 3 has only the print() function", versions)
 
 
-def check_exec(path, tree, tokens):
+def check_exec(path, tree, tokens, versions):
     for node in _nodes(tree, "exec_stmt"):
         yield Finding(path, node.start_pos[0], "PY3-EXEC-STMT", "blocker",
-                      "exec statement; Python 3 has only the exec() function")
+                      "exec statement; Python 3 has only the exec() function", versions)
 
 
-def check_backtick(path, tree, tokens):
+def check_backtick(path, tree, tokens, versions):
     for node in _nodes(tree, "atom"):
         children = node.children
         if children and getattr(children[0], "value", None) == "`":
             yield Finding(path, node.start_pos[0], "PY3-BACKTICK", "blocker",
-                          "backtick repr expression; Python 3 has only the repr() function")
+                          "backtick repr expression; Python 3 has only the repr() function",
+                          versions)
 
 
-def check_raise_comma(path, tree, tokens):
+def check_raise_comma(path, tree, tokens, versions):
     for node in _nodes(tree, "raise_stmt"):
         if any(getattr(c, "value", None) == "," for c in node.children):
             yield Finding(path, node.start_pos[0], "PY3-RAISE-COMMA", "blocker",
-                          "raise with comma-separated value; Python 3 uses raise E(value)")
+                          "raise with comma-separated value; Python 3 uses raise E(value)",
+                          versions)
 
 
 DICT_ITER_METHODS = frozenset(["iteritems", "iterkeys", "itervalues", "has_key"])
 
 
-def check_dict_iter(path, tree, tokens):
+def check_dict_iter(path, tree, tokens, versions):
     for node in _nodes(tree, "trailer"):
         children = node.children
         if (len(children) == 2 and getattr(children[0], "value", None) == "."
@@ -96,10 +98,10 @@ def check_dict_iter(path, tree, tokens):
                 nxt = siblings[idx + 1]
                 if nxt.type == "trailer" and getattr(nxt.children[0], "value", None) == "(":
                     yield Finding(path, node.start_pos[0], "PY3-DICT-ITER", "blocker",
-                                  "%s(); not available in Python 3" % children[1].value)
+                                  "%s(); not available in Python 3" % children[1].value, versions)
 
 
-def check_metaclass(path, tree, tokens):
+def check_metaclass(path, tree, tokens, versions):
     for cls in _nodes(tree, "classdef"):
         suite = cls.children[-1]
         for stmt in getattr(suite, "children", ()):
@@ -108,19 +110,126 @@ def check_metaclass(path, tree, tokens):
                 if (expr.type == "expr_stmt" and expr.children[0].type == "name"
                         and expr.children[0].value == "__metaclass__"):
                     yield Finding(path, stmt.start_pos[0], "PY3-METACLASS", "warning",
-                                  "__metaclass__ assignment; Python 3 uses the metaclass= keyword")
+                                  "__metaclass__ assignment; Python 3 uses the metaclass= keyword",
+                                  versions)
+
+
+def check_tuple_param(path, tree, tokens, versions):
+    """def f((a, b)): ... / lambda (a, b): ...: tuple-parameter unpacking.
+    Valid 2.7 syntax (fpdef in the grammar), removed outright in 3.0 and
+    never reintroduced - confirmed against real 2.7.18 (compiles) and
+    3.14.9 (SyntaxError: Function parameters cannot be parenthesized), so
+    this blocks every judged version, not just the ones tested directly."""
+    for node in _nodes(tree, "fpdef"):
+        yield Finding(path, node.start_pos[0], "PY3-TUPLE-PARAM", "blocker",
+                      "tuple parameter unpacking; not supported in Python 3", versions)
+
+
+_RESERVED_SINCE_37 = frozenset(["async", "await"])
+
+
+def check_async_reserved(path, tree, tokens, versions):
+    """async/await used as ordinary identifiers: valid 2.7 syntax (they are
+    plain NAME tokens there, never keywords) and still valid through real
+    Python 3.6.15, but a SyntaxError on real Python 3.7.17 once PEP 492
+    made them reserved words. Only the versions actually >= 3.7 among the
+    ones judged are affected."""
+    gated = tuple(v for v in versions if v >= (3, 7))
+    if not gated:
+        return
+    for leaf in _walk(tree):
+        if leaf.type == "name" and leaf.value in _RESERVED_SINCE_37:
+            yield Finding(path, leaf.start_pos[0], "PY3-ASYNC-RESERVED", "blocker",
+                          "%s; reserved keyword in Python 3.7 and later" % leaf.value, gated)
 
 
 # ---------------------------------------------------------------------------
 # PY3-STDLIB
 
-STDLIB_MODULES = frozenset([
+# R8: every top-level 2.7 stdlib module missing from a judged version, not
+# just this original set. Renamed/removed at the 3.0 boundary (PEP 3108)
+# and gone from every judged version (3.6-3.15) ever since, confirmed by
+# `import NAME` on real 2.7.18 (succeeds) and on 3.6.15 through 3.15.1
+# (ModuleNotFoundError, every one). urllib and dbm are deliberately absent
+# here even though PEP 3108 lists them as renamed: both names survive as
+# package names in Python 3 (urllib.request etc., dbm.gnu etc.), so a bare
+# `import urllib` or `import dbm` succeeds there too - flagging the bare
+# import would be a false positive; the real break is an attribute access
+# (urllib.urlopen), which this import-level rule does not reach.
+UNIVERSAL_STDLIB_MODULES = frozenset([
     "urllib2", "urlparse", "ConfigParser", "Queue", "cPickle", "cStringIO",
     "StringIO", "httplib", "HTMLParser", "commands", "SocketServer",
     "Tkinter", "__builtin__", "copy_reg", "xmlrpclib", "thread", "Cookie",
     "cookielib", "BaseHTTPServer", "SimpleHTTPServer", "htmlentitydefs",
     "md5", "sha", "sets", "UserDict",
+    # PEP 3108 "Previously Deprecated" / "Hardly Used" / "Obsolete":
+    "mimetools", "MimeWriter", "mimify", "multifile", "posixfile", "rfc822",
+    "timing", "audiodev", "imputil", "mutex", "stringold", "user", "new",
+    "Bastion", "rexec", "Canvas", "compiler", "dircache", "dl", "fpformat",
+    "htmllib", "ihooks", "imageop", "linuxaudiodev", "mhlib", "popen2",
+    "sgmllib", "sre", "UserList", "UserString",
+    # PEP 3108 "Modules Renamed" (old name -> new), minus urllib/dbm:
+    "_winreg", "markupbase", "repr", "anydbm", "dbhash", "dumbdbm", "gdbm",
+    "whichdb", "CGIHTTPServer", "robotparser", "DocXMLRPCServer",
+    "SimpleXMLRPCServer", "Dialog", "FileDialog", "FixTk", "ScrolledText",
+    "SimpleDialog", "Tix", "Tkconstants", "Tkdnd", "tkColorChooser",
+    "tkCommonDialog", "tkFileDialog", "tkFont", "tkMessageBox",
+    "tkSimpleDialog",
 ])
+
+# R8: modules that stayed importable past the 3.0 boundary and were only
+# removed later, within the 3.6-3.15 range py2scan judges. Each entry is
+# (module, version_removed_in): the module blocks that version and every
+# later one, and no earlier one. Sources, each cross-checked by import on
+# the real interpreters either side of the boundary:
+#   - PEP 594: aifc, audioop, cgi, cgitb, chunk, crypt, imghdr, mailcap,
+#     msilib, nis, nntplib, ossaudiodev, pipes, sndhdr, spwd, sunau,
+#     telnetlib, uu, xdrlib -> removed in 3.13. (nis imports fail on this
+#     machine starting at 3.9, but that is this build missing libnsl, not
+#     a real removal - PEP 594's documented 3.13 wins over that empirical
+#     result, per R8's own "missing from a single build" caveat.)
+#   - What's New in 3.12: asynchat, asyncore, smtpd, imp -> 3.12.
+#   - PEP 632: distutils -> 3.12.
+#   - What's New in 3.13: lib2to3 -> 3.13 (ships alongside the PEP 594 set).
+#   - What's New in 3.15: sre_compile, sre_constants, sre_parse -> 3.15.
+#   - Empirical only (no PEP; confirmed OK on the version before, gone on
+#     the version named): macpath -> 3.8, parser/symbol/formatter -> 3.10,
+#     binhex -> 3.11.
+VERSIONED_STDLIB_REMOVALS = {
+    "macpath": (3, 8),
+    "parser": (3, 10),
+    "symbol": (3, 10),
+    "formatter": (3, 10),
+    "binhex": (3, 11),
+    "asynchat": (3, 12),
+    "asyncore": (3, 12),
+    "smtpd": (3, 12),
+    "imp": (3, 12),
+    "distutils": (3, 12),
+    "aifc": (3, 13),
+    "audioop": (3, 13),
+    "cgi": (3, 13),
+    "cgitb": (3, 13),
+    "chunk": (3, 13),
+    "crypt": (3, 13),
+    "imghdr": (3, 13),
+    "mailcap": (3, 13),
+    "msilib": (3, 13),
+    "nis": (3, 13),
+    "nntplib": (3, 13),
+    "ossaudiodev": (3, 13),
+    "pipes": (3, 13),
+    "sndhdr": (3, 13),
+    "spwd": (3, 13),
+    "sunau": (3, 13),
+    "telnetlib": (3, 13),
+    "uu": (3, 13),
+    "xdrlib": (3, 13),
+    "lib2to3": (3, 13),
+    "sre_compile": (3, 15),
+    "sre_constants": (3, 15),
+    "sre_parse": (3, 15),
+}
 
 # R2: a bare except, or a handler naming one of these (alone or in a tuple),
 # makes a PY3-STDLIB import inside the try (body or a handler body) a
@@ -196,30 +305,49 @@ def _qualifying_try_ancestor(node):
     return None
 
 
-def check_stdlib(path, tree, tokens):
+def _stdlib_removal_versions(module, versions):
+    """None if module is unaffected by every judged version; otherwise the
+    subset of versions it blocks."""
+    if module in UNIVERSAL_STDLIB_MODULES:
+        return versions
+    removed_in = VERSIONED_STDLIB_REMOVALS.get(module)
+    if removed_in is None:
+        return None
+    return tuple(v for v in versions if v >= removed_in) or None
+
+
+def check_stdlib(path, tree, tokens, versions):
     for node in _nodes(tree, "import_name"):
         for top in _dotted_module_names(node.children[1]):
-            if top in STDLIB_MODULES:
+            affected = _stdlib_removal_versions(top, versions)
+            if affected:
                 severity = "warning" if _qualifying_try_ancestor(node) else "blocker"
                 yield Finding(path, node.start_pos[0], "PY3-STDLIB", severity,
-                              "import of %s; renamed or removed in Python 3" % top)
+                              "import of %s; renamed or removed in Python 3" % top, affected)
     for node in _nodes(tree, "import_from"):
         module_node = node.children[1]
         tops = list(_dotted_module_names(module_node))
         top = tops[0] if tops else None
-        if top in STDLIB_MODULES:
+        affected = _stdlib_removal_versions(top, versions) if top else None
+        if affected:
             severity = "warning" if _qualifying_try_ancestor(node) else "blocker"
             yield Finding(path, node.start_pos[0], "PY3-STDLIB", severity,
-                          "import from %s; renamed or removed in Python 3" % top)
+                          "import from %s; renamed or removed in Python 3" % top, affected)
 
 
 # ---------------------------------------------------------------------------
 # PY3-BUILTIN
 
+# R10: every name in every judged version's builtins module that 2.7's
+# __builtin__ has and it does not - not just this original set. Derived by
+# diffing dir(__builtin__) on real 2.7.18 against dir(builtins) on real
+# 3.6.15 through 3.15.1: all ten give the exact same 16-name difference, so
+# this one frozenset covers every judged version with no per-version table
+# needed (unlike PY3-STDLIB, nothing here varies release to release).
 BUILTIN_NAMES = frozenset([
     "unicode", "basestring", "long", "xrange", "raw_input", "unichr",
     "execfile", "reduce", "file", "cmp", "reload", "apply", "buffer",
-    "intern", "coerce",
+    "intern", "coerce", "StandardError",
 ])
 
 _GROUPING_TYPES = ("testlist", "exprlist", "testlist_star_expr", "testlist_comp", "atom")
@@ -418,7 +546,7 @@ def _dotted_as_bound_leaves(node):
                 yield leaf
 
 
-def check_builtin(path, tree, tokens):
+def check_builtin(path, tree, tokens, versions):
     target_leaves, local_by_func, globals_by_func, module_level = _collect_scopes(tree)
 
     module_bound = set(module_level)
@@ -447,8 +575,30 @@ def check_builtin(path, tree, tokens):
             shadowed = True
         if not shadowed:
             yield Finding(path, leaf.start_pos[0], "PY3-BUILTIN", "blocker",
-                          "%s; removed or renamed in Python 3" % leaf.value)
+                          "%s; removed or renamed in Python 3" % leaf.value, versions)
+
+
+_RESERVED_SINCE_30 = frozenset(["True", "False"])
+
+
+def check_keyword_binding(path, tree, tokens, versions):
+    """True/False used as a binding target (assignment, del, for, with-as,
+    except-as, a function/class name, a parameter, an import-as name):
+    valid 2.7 syntax (True/False are plain builtins there, not grammar
+    keywords, so nothing stops rebinding them) but a hard SyntaxError in
+    every Python 3, since 3.0 made both real keywords. Confirmed on real
+    2.7.18 (every form above compiles) and 3.14.9 (every form is a
+    SyntaxError). None is deliberately excluded: 2.7's own compiler
+    already rejects binding None ("cannot assign to None"), so that is
+    already-broken 2.7 source, not a 2-to-3 migration concern."""
+    target_leaves = _collect_scopes(tree)[0]
+    for leaf in target_leaves:
+        if leaf.value in _RESERVED_SINCE_30:
+            yield Finding(path, leaf.start_pos[0], "PY3-KEYWORD-BINDING", "blocker",
+                          "%s used as a binding target; reserved keyword in Python 3"
+                          % leaf.value, versions)
 
 
 AST_RULES = [check_print, check_exec, check_backtick, check_raise_comma,
-             check_dict_iter, check_builtin, check_stdlib, check_metaclass]
+             check_dict_iter, check_builtin, check_stdlib, check_metaclass,
+             check_tuple_param, check_async_reserved, check_keyword_binding]

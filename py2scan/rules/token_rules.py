@@ -23,23 +23,24 @@ def _walk(node):
             yield n
 
 
-def check_ne_op(path, tree, tokens):
+def check_ne_op(path, tree, tokens, versions):
     for toknum, tokval, start, end, line in tokens:
         if toknum == tokenize.OP and tokval == "<>":
             yield Finding(path, start[0], "PY3-NE-OP", "blocker",
-                          "<> operator; Python 3 has only !=")
+                          "<> operator; Python 3 has only !=", versions)
 
 
-def check_octal(path, tree, tokens):
+def check_octal(path, tree, tokens, versions):
     for toknum, tokval, start, end, line in tokens:
         if toknum == tokenize.NUMBER:
             text = tokval[:-1] if tokval[-1:] in ("L", "l") else tokval
             if _OCTAL_RE.match(text):
                 yield Finding(path, start[0], "PY3-OCTAL", "blocker",
-                              "%s; old-style octal literal, Python 3 requires a 0o prefix" % tokval)
+                              "%s; old-style octal literal, Python 3 requires a 0o prefix" % tokval,
+                              versions)
 
 
-def check_long_suffix(path, tree, tokens):
+def check_long_suffix(path, tree, tokens, versions):
     n = len(tokens)
     for i in range(n):
         toknum, tokval, start, end, line = tokens[i]
@@ -47,12 +48,13 @@ def check_long_suffix(path, tree, tokens):
             continue
         if tokval[-1:] in ("L", "l"):
             yield Finding(path, start[0], "PY3-LONG-SUFFIX", "blocker",
-                          "%s; the long type and L suffix do not exist in Python 3" % tokval)
+                          "%s; the long type and L suffix do not exist in Python 3" % tokval,
+                          versions)
         elif i + 1 < n:
             t2, v2, s2, e2, l2 = tokens[i + 1]
             if t2 == tokenize.NAME and v2 in ("L", "l") and s2 == end:
                 message = "%s; the long type and L suffix do not exist in Python 3" % (tokval + v2)
-                yield Finding(path, start[0], "PY3-LONG-SUFFIX", "blocker", message)
+                yield Finding(path, start[0], "PY3-LONG-SUFFIX", "blocker", message, versions)
 
 
 def _except_header_end(tokens, start):
@@ -81,7 +83,7 @@ def _except_header_end(tokens, start):
     return comma_found, j
 
 
-def check_except_comma(path, tree, tokens):
+def check_except_comma(path, tree, tokens, versions):
     n = len(tokens)
     i = 0
     while i < n:
@@ -90,7 +92,7 @@ def check_except_comma(path, tree, tokens):
             comma_found, i = _except_header_end(tokens, i + 1)
             if comma_found:
                 yield Finding(path, start[0], "PY3-EXCEPT-COMMA", "blocker",
-                              "except X, e:; Python 3 requires except X as e:")
+                              "except X, e:; Python 3 requires except X as e:", versions)
         i += 1
 
 
@@ -115,14 +117,14 @@ def _has_future_division(tree):
     return False
 
 
-def check_division(path, tree, tokens):
+def check_division(path, tree, tokens, versions):
     if _has_future_division(tree):
         return
     for toknum, tokval, start, end, line in tokens:
         if toknum == tokenize.OP and tokval in ("/", "/="):
             yield Finding(path, start[0], "PY3-DIVISION", "warning",
                           "%s; true division is not the default without "
-                          "from __future__ import division" % tokval)
+                          "from __future__ import division" % tokval, versions)
 
 
 TOKEN_RULES = [check_ne_op, check_octal, check_long_suffix, check_except_comma, check_division]

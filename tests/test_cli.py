@@ -62,9 +62,11 @@ def test_format_json_output():
     assert result.exit_code == 1, result.output
     payload = json.loads(result.output)
     assert payload["files"] == 1
-    assert payload["readiness"] == 0.0
+    assert payload["readiness"]["3.9"] == 0.0
+    assert payload["file_readiness"] == {"a.py": []}
     assert payload["rules"] == {"PY3-PRINT": 1}
     assert payload["findings"][0]["rule"] == "PY3-PRINT"
+    assert "3.9" in payload["findings"][0]["versions"]
 
 
 def test_jobs_flag_is_accepted():
@@ -76,6 +78,34 @@ def test_jobs_flag_is_accepted():
     finally:
         shutil.rmtree(root)
     assert result.exit_code == 1, result.output
+
+
+def test_py3_flag_narrows_judged_versions():
+    root = tempfile.mkdtemp()
+    try:
+        # async/await as identifiers only block Python 3.7+ (PY3-ASYNC-RESERVED);
+        # judging only 3.6 should find nothing here.
+        with open(os.path.join(root, "a.py"), "wb") as f:
+            f.write(b"async = 1\n")
+        result = CliRunner().invoke(main, ["scan", root, "--py3", "3.6", "--format", "json"])
+    finally:
+        shutil.rmtree(root)
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["versions_judged"] == ["3.6"]
+    assert payload["findings"] == []
+
+
+def test_invalid_py3_version_is_rejected():
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "a.py"), "wb") as f:
+            f.write(b"x = 1\n")
+        result = CliRunner().invoke(main, ["scan", root, "--py3", "9.9"])
+    finally:
+        shutil.rmtree(root)
+    assert result.exit_code != 0
+    assert "9.9" in result.output
 
 
 def test_html_report_is_written(tmp_path):

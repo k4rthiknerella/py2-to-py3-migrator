@@ -18,7 +18,7 @@ class Config(object):
                 continue
             severity = self.severity_overrides.get(f.rule, f.severity)
             if severity != f.severity:
-                f = Finding(f.file, f.line, f.rule, severity, f.message)
+                f = Finding(f.file, f.line, f.rule, severity, f.message, f.versions)
             result.append(f)
         return result
 
