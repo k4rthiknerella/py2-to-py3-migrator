@@ -579,3 +579,42 @@ def test_deep_nesting_is_not_blocked_for_versions_past_38():
 def test_deep_nesting_mixed_bracket_types_is_found():
     source = "x = " + "[" * 150 + "1" + "]" * 150 + "\n"
     assert token_rules(check_deep_nesting, source) == [(1, "PY3-DEEP-NESTING")]
+
+
+def test_deep_nesting_at_60_compiles_on_every_pre_39_version_and_is_not_found():
+    # Real repro (independent check): real 3.6.15, 3.7.17 and 3.8.20 all
+    # compile 60 levels of nesting fine (the real cutoff is 93 for the
+    # first two, 99 for 3.8) -- the old flat threshold of 50 flagged this
+    # as a blocker for all three, which R6/R7 forbid: a version that
+    # really compiles the file must never be reported unready for it.
+    source = "x = " + "(" * 60 + "1" + ")" * 60 + "\n"
+    assert token_rules(check_deep_nesting, source) == []
+
+
+def test_deep_nesting_just_below_each_versions_measured_cutoff_is_not_found():
+    tree, tokens = parsed("x = " + "(" * 92 + "1" + ")" * 92 + "\n")
+    findings = list(check_deep_nesting("m.py", tree, tokens, ((3, 6), (3, 7))))
+    assert findings == []
+    tree, tokens = parsed("x = " + "(" * 98 + "1" + ")" * 98 + "\n")
+    findings = list(check_deep_nesting("m.py", tree, tokens, ((3, 8),)))
+    assert findings == []
+
+
+def test_deep_nesting_at_95_blocks_36_and_37_but_not_38():
+    # Real repro (independent check): at 95 deep, real 3.8.20 still
+    # compiles (its measured cutoff is 99), but real 3.6.15 and 3.7.17
+    # both already fail (cutoff 93) -- the report must name exactly the
+    # versions that are actually unready, not the whole gated set.
+    source = "x = " + "(" * 95 + "1" + ")" * 95 + "\n"
+    tree, tokens = parsed(source)
+    findings = list(check_deep_nesting("m.py", tree, tokens, ((3, 6), (3, 7), (3, 8))))
+    assert len(findings) == 1
+    assert set(findings[0].versions) == set([(3, 6), (3, 7)])
+
+
+def test_deep_nesting_at_99_blocks_all_three_pre_39_versions():
+    source = "x = " + "(" * 99 + "1" + ")" * 99 + "\n"
+    tree, tokens = parsed(source)
+    findings = list(check_deep_nesting("m.py", tree, tokens, ((3, 6), (3, 7), (3, 8))))
+    assert len(findings) == 1
+    assert set(findings[0].versions) == set([(3, 6), (3, 7), (3, 8)])

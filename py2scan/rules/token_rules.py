@@ -147,14 +147,22 @@ def check_division(path, tree, tokens, versions):
 
 _NESTING_OPEN = frozenset(["(", "[", "{"])
 _NESTING_CLOSE = frozenset([")", "]", "}"])
-_DEEP_NESTING_VERSIONS = frozenset([(3, 6), (3, 7), (3, 8)])
-# Conservative: empirically, real 3.6.15/3.7.17/3.8.20 compile fine up to
-# depth 90 and start failing by depth 95-99 (checked via `docker run
+# R6/R7: the exact depth each version's real interpreter first fails at,
+# not a conservative guess below it -- a file is either ready for a given
+# version or it is not, and reporting it unready below the real cutoff is
+# as wrong as reporting it ready above it. Measured via `docker run
 # python:X-slim`, a direct py_compile.compile() against a generated
-# nested-parens file at each depth). The true cutoff is a C stack depth,
-# not a language rule -- it can shift with the platform's stack size --
-# so this flags well below the observed failure point rather than at it.
-_DEEP_NESTING_THRESHOLD = 50
+# nested-parens file swept one depth at a time (compiles through N-1,
+# MemoryError from N on): 93 for both 3.6.15 and 3.7.17, 99 for 3.8.20.
+# This is a C stack depth, not a language rule, so it could in principle
+# shift with the platform's stack size -- these are the values this
+# environment's real interpreters measure, the same ones R6/R7 require
+# version facts to come from.
+_DEEP_NESTING_THRESHOLDS = {
+    (3, 6): 93,
+    (3, 7): 93,
+    (3, 8): 99,
+}
 
 
 def check_deep_nesting(path, tree, tokens, versions):
@@ -166,7 +174,7 @@ def check_deep_nesting(path, tree, tokens, versions):
     same way). Real CPython 2.7.18 has the *same* kind of limit and fails
     too at this depth -- irrelevant to this rule, which only tracks
     whether Python 3 can compile it, not 2.7."""
-    gated = tuple(v for v in versions if v in _DEEP_NESTING_VERSIONS)
+    gated = tuple(v for v in versions if v in _DEEP_NESTING_THRESHOLDS)
     if not gated:
         return
     depth = 0
@@ -182,10 +190,11 @@ def check_deep_nesting(path, tree, tokens, versions):
                 start = tok_start
         elif tokval in _NESTING_CLOSE:
             depth = max(0, depth - 1)
-    if max_depth > _DEEP_NESTING_THRESHOLD:
+    affected = tuple(v for v in gated if max_depth >= _DEEP_NESTING_THRESHOLDS[v])
+    if affected:
         yield Finding(path, start[0] if start else 1, "PY3-DEEP-NESTING", "blocker",
-                      "%d levels of nested brackets; may exceed Python "
-                      "3.6-3.8's parser stack depth" % max_depth, gated)
+                      "%d levels of nested brackets; exceeds this Python 3 "
+                      "version's pre-3.9 parser stack depth" % max_depth, affected)
 
 
 TOKEN_RULES = [check_ne_op, check_octal, check_long_suffix, check_except_comma, check_division,
