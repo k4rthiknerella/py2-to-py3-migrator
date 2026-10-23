@@ -6,6 +6,11 @@ from jinja2 import Environment
 
 from py2scan.encoding import decode_source_lines
 
+# Bumped whenever the JSON shape changes, so consumers can detect a field
+# like "unreadable" (added for exit-code-2 / incomplete-scan reporting)
+# before they rely on it.
+SCHEMA_VERSION = 2
+
 
 def compute_summary(files, findings):
     if not files:
@@ -17,13 +22,16 @@ def compute_summary(files, findings):
     return readiness, counts
 
 
-def to_json(files, findings):
-    readiness, rules = compute_summary(files, findings)
+def to_json(scan_result, findings):
+    readiness, rules = compute_summary(scan_result.files, findings)
     return {
-        "files": len(files),
+        "schema": SCHEMA_VERSION,
+        "files": len(scan_result.files),
         "readiness": readiness,
         "rules": rules,
         "findings": [f.to_dict() for f in findings],
+        "unreadable": [{"path": path, "reason": reason}
+                       for path, reason in scan_result.unreadable],
     }
 
 

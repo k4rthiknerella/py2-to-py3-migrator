@@ -32,6 +32,7 @@ def load_config(path):
     severities = data.get("severity") or {}
     for rule, severity in severities.items():
         if severity not in VALID_SEVERITIES:
-            raise ValueError("invalid severity %r for rule %s; must be blocker or warning"
-                              % (severity, rule))
+            raise ValueError(
+                "invalid severity %r for rule %s; must be blocker or warning"
+                % (severity, rule))
     return Config(disabled, severities)

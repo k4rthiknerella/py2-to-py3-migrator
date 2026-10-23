@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from py2scan.findings import Finding
 from py2scan.report import compute_summary, render_html, to_json
+from py2scan.scanner import ScanResult
 
 
 def test_readiness_is_100_when_no_files():
@@ -32,16 +33,24 @@ def test_rules_with_zero_findings_are_excluded():
 
 
 def test_to_json_shape():
-    files = ["a.py"]
     findings = [Finding("a.py", 1, "PY3-PRINT", "blocker", "print x")]
-    result = to_json(files, findings)
-    assert result == {
+    scan_result = ScanResult(["a.py"], findings, [])
+    payload = to_json(scan_result, findings)
+    assert payload == {
+        "schema": 2,
         "files": 1,
         "readiness": 0.0,
         "rules": {"PY3-PRINT": 1},
         "findings": [{"file": "a.py", "line": 1, "rule": "PY3-PRINT",
                       "severity": "blocker", "message": "print x"}],
+        "unreadable": [],
     }
+
+
+def test_to_json_lists_unreadable_entries():
+    scan_result = ScanResult(["a.py"], [], [("b.py", "permission denied")])
+    payload = to_json(scan_result, [])
+    assert payload["unreadable"] == [{"path": "b.py", "reason": "permission denied"}]
 
 
 def test_render_html_is_self_contained_and_shows_source(tmp_path):

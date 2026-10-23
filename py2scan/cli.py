@@ -25,18 +25,22 @@ def main():
 def scan_cmd(path, fmt, config_path, jobs, html_path):
     """Scan every .py file under PATH."""
     config = load_config(config_path)
-    files, raw_findings = scan(path, jobs=jobs)
-    findings = config.apply(raw_findings)
+    result = scan(path, jobs=jobs)
+    findings = config.apply(result.findings)
 
     if html_path:
         with open(html_path, "wb") as fh:
-            fh.write(render_html(path, files, findings).encode("utf-8"))
+            fh.write(render_html(path, result.files, findings).encode("utf-8"))
 
     if fmt == "json":
-        click.echo(json.dumps(to_json(files, findings)))
+        click.echo(json.dumps(to_json(result, findings)))
     else:
         for f in findings:
             click.echo(u"%s:%d: %s %s" % (f.file, f.line, f.rule, f.message))
-        click.echo(u"%d files, %d findings" % (len(files), len(findings)))
+        for rel, reason in result.unreadable:
+            click.echo(u"%s: unreadable: %s" % (rel, reason))
+        click.echo(u"%d files, %d findings" % (len(result.files), len(findings)))
 
+    if result.incomplete:
+        sys.exit(2)
     sys.exit(1 if any(f.severity == "blocker" for f in findings) else 0)

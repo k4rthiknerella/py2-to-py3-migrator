@@ -1,8 +1,5 @@
 # -*- coding: utf-8 -*-
-import ast
-import tokenize
-from io import BytesIO
-
+from py2scan.parsing import parse_source
 from py2scan.rules.ast_rules import (
     check_backtick,
     check_builtin,
@@ -22,8 +19,15 @@ from py2scan.rules.token_rules import (
 )
 
 
+def parsed(source):
+    tree, tokens, failure, compiles = parse_source("m.py", source.encode("ascii"))
+    assert failure is None, getattr(failure, "message", failure)
+    return tree, tokens
+
+
 def rules(fn, source):
-    return [(f.line, f.rule) for f in fn("m.py", ast.parse(source), [])]
+    tree, tokens = parsed(source)
+    return [(f.line, f.rule) for f in fn("m.py", tree, tokens)]
 
 
 def test_print_statement_is_found():
@@ -89,6 +93,26 @@ def test_two_builtins_on_one_line_are_two_findings():
     ]
 
 
+def test_builtin_bound_by_del_alone_is_not_found_after():
+    # R3: `del` of a name binds it in that scope on its own, even with no
+    # prior assignment and even though del does not introduce a value.
+    src = "del unicode\nx = unicode('a')\n"
+    assert rules(check_builtin, src) == []
+
+
+def test_builtin_shadowed_by_global_requires_an_actual_binding():
+    # R3: a bare `global X` with no binding of X inside that function does
+    # not, by itself, bind X anywhere; the module-level builtin use still
+    # counts as a finding.
+    src = "def f():\n    global unicode\n    return 1\nx = unicode('a')\n"
+    assert rules(check_builtin, src) == [(4, "PY3-BUILTIN")]
+
+
+def test_builtin_shadowed_by_global_with_real_binding_is_module_wide():
+    src = "def f():\n    global unicode\n    unicode = str\nf()\nx = unicode('a')\n"
+    assert rules(check_builtin, src) == []
+
+
 def test_stdlib_import_is_found():
     assert rules(check_stdlib, "import urllib2\n") == [(1, "PY3-STDLIB")]
 
@@ -111,6 +135,46 @@ def test_two_stdlib_imports_on_one_line_are_two_findings():
     ]
 
 
+def test_stdlib_import_in_bare_except_try_is_warning():
+    # R2: a bare except covering the import downgrades it.
+    src = "try:\n    import urllib2\nexcept:\n    import urllib.request as urllib2\n"
+    tree, tokens = parsed(src)
+    findings = list(check_stdlib("m.py", tree, tokens))
+    assert [(f.line, f.severity) for f in findings] == [(2, "warning")]
+
+
+def test_stdlib_import_in_handler_catching_import_error_is_warning():
+    src = ("try:\n    import urllib.request as urllib2\n"
+           "except ImportError:\n    import urllib2\n")
+    tree, tokens = parsed(src)
+    findings = list(check_stdlib("m.py", tree, tokens))
+    assert [(f.line, f.severity) for f in findings] == [(4, "warning")]
+
+
+def test_stdlib_import_in_try_without_qualifying_handler_is_blocker():
+    src = "try:\n    import urllib2\nexcept ValueError:\n    pass\n"
+    tree, tokens = parsed(src)
+    findings = list(check_stdlib("m.py", tree, tokens))
+    assert [(f.line, f.severity) for f in findings] == [(2, "blocker")]
+
+
+def test_stdlib_import_in_try_else_is_blocker():
+    # R2: "inside" means the try body or handler bodies only, not else/finally.
+    src = ("try:\n    pass\nexcept ImportError:\n    pass\n"
+           "else:\n    import urllib2\n")
+    tree, tokens = parsed(src)
+    findings = list(check_stdlib("m.py", tree, tokens))
+    assert [(f.line, f.severity) for f in findings] == [(6, "blocker")]
+
+
+def test_stdlib_import_in_nested_def_inside_try_is_blocker():
+    # R2: a nested def's body runs later, so it is not "inside" the try.
+    src = ("try:\n    def f():\n        import urllib2\nexcept ImportError:\n    pass\n")
+    tree, tokens = parsed(src)
+    findings = list(check_stdlib("m.py", tree, tokens))
+    assert [(f.line, f.severity) for f in findings] == [(3, "blocker")]
+
+
 def test_metaclass_assignment_is_found():
     src = "class C(object):\n    __metaclass__ = type\n"
     assert rules(check_metaclass, src) == [(2, "PY3-METACLASS")]
@@ -121,12 +185,9 @@ def test_other_class_assignment_is_not_found():
     assert rules(check_metaclass, src) == []
 
 
-def tokens_for(source):
-    return list(tokenize.generate_tokens(BytesIO(source).readline))
-
-
 def token_rules(fn, source):
-    return [(f.line, f.rule) for f in fn("m.py", None, tokens_for(source))]
+    tree, tokens = parsed(source)
+    return [(f.line, f.rule) for f in fn("m.py", tree, tokens)]
 
 
 def test_ne_op_is_found():
@@ -200,8 +261,8 @@ def test_bare_except_is_not_found():
 
 
 def division_rules(source):
-    tree = ast.parse(source)
-    return [(f.line, f.rule, f.severity) for f in check_division("m.py", tree, tokens_for(source))]
+    tree, tokens = parsed(source)
+    return [(f.line, f.rule, f.severity) for f in check_division("m.py", tree, tokens)]
 
 
 def test_division_without_future_import_is_warning():

@@ -22,8 +22,11 @@ def test_output_identical_across_job_counts():
     try:
         baseline = scan(root, jobs=1)
         for jobs in (1, 2, 4, 8):
-            files, findings = scan(root, jobs=jobs)
-            assert files == baseline[0]
-            assert [f.to_dict() for f in findings] == [f.to_dict() for f in baseline[1]]
+            result = scan(root, jobs=jobs)
+            assert result.files == baseline.files
+            got = [f.to_dict() for f in result.findings]
+            want = [f.to_dict() for f in baseline.findings]
+            assert got == want
+            assert result.unreadable == baseline.unreadable
     finally:
         shutil.rmtree(root)
