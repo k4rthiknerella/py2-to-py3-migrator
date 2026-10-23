@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 from py2scan.findings import Finding
-from py2scan.report import compute_summary, to_json
+from py2scan.report import compute_summary, render_html, to_json
 
 
 def test_readiness_is_100_when_no_files():
@@ -42,3 +42,27 @@ def test_to_json_shape():
         "findings": [{"file": "a.py", "line": 1, "rule": "PY3-PRINT",
                       "severity": "blocker", "message": "print x"}],
     }
+
+
+def test_render_html_is_self_contained_and_shows_source(tmp_path):
+    root = str(tmp_path)
+    with open(root + "/a.py", "wb") as f:
+        f.write(b"print 'hello'\n")
+    findings = [Finding("a.py", 1, "PY3-PRINT", "blocker",
+                        "print statement; Python 3 has only the print() function")]
+    html = render_html(root, ["a.py"], findings)
+    assert "<html" in html
+    assert "<link" not in html
+    assert "<script src" not in html
+    assert "a.py" in html
+    assert "PY3-PRINT" in html
+    assert "print &#39;hello&#39;" in html or "print &#x27;hello&#x27;" in html
+
+
+def test_render_html_escapes_source_line(tmp_path):
+    root = str(tmp_path)
+    with open(root + "/a.py", "wb") as f:
+        f.write(b"x = 1 <> 2\n")
+    findings = [Finding("a.py", 1, "PY3-NE-OP", "blocker", "<> operator")]
+    html = render_html(root, ["a.py"], findings)
+    assert "x = 1 &lt;&gt; 2" in html

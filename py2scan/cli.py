@@ -5,7 +5,7 @@ import sys
 import click
 
 from py2scan.config import load_config
-from py2scan.report import to_json
+from py2scan.report import render_html, to_json
 from py2scan.scanner import scan
 
 
@@ -20,11 +20,17 @@ def main():
 @click.option("--config", "config_path", type=click.Path(exists=True, dir_okay=False),
               help="YAML file with disable/severity overrides.")
 @click.option("--jobs", type=int, default=4, help="Parallel workers (default 4).")
-def scan_cmd(path, fmt, config_path, jobs):
+@click.option("--html", "html_path", type=click.Path(dir_okay=False),
+              help="Write a self-contained HTML report to this path.")
+def scan_cmd(path, fmt, config_path, jobs, html_path):
     """Scan every .py file under PATH."""
     config = load_config(config_path)
     files, raw_findings = scan(path, jobs=jobs)
     findings = config.apply(raw_findings)
+
+    if html_path:
+        with open(html_path, "wb") as fh:
+            fh.write(render_html(path, files, findings).encode("utf-8"))
 
     if fmt == "json":
         click.echo(json.dumps(to_json(files, findings)))

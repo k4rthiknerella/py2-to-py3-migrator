@@ -76,3 +76,19 @@ def test_jobs_flag_is_accepted():
     finally:
         shutil.rmtree(root)
     assert result.exit_code == 1, result.output
+
+
+def test_html_report_is_written(tmp_path):
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "a.py"), "wb") as f:
+            f.write(b"print 'hello'\n")
+        html_path = os.path.join(str(tmp_path), "report.html")
+        result = CliRunner().invoke(main, ["scan", root, "--html", html_path])
+        assert result.exit_code == 1, result.output
+        with open(html_path, "rb") as f:
+            content = f.read().decode("utf-8")
+        assert "PY3-PRINT" in content
+        assert "a.py" in content
+    finally:
+        shutil.rmtree(root)
