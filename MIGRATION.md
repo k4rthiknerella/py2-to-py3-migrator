@@ -776,6 +776,45 @@ Inputs, each verified against both real interpreters (2.7.18, 3.14.7) via
   Python 3's grammar rejects" framing in the prior version of this entry
   was also wrong for this specific rule, for the same reason.
 
+**Update, 2026-10-23: confirmed at real-stdlib scale by AutoSteer CI,
+and two more rules and two more hostile inputs join this same defect
+category — not new defects, the same one, observed on more inputs.**
+AutoSteer's own real-interpreter diff against the full stdlib tree
+reported "findings: 3144 only on 2.7, 243 only on 3.14" — every single
+one of those 243 "only on 3.14" findings is `PY3-PARSE` (confirmed via a
+direct reproduction: `scanner.scan()` against the same real tree on both
+interpreters, diffed by `(file, line, rule)`), and every one of the
+3144 "only on 2.7" findings is one of: `PY3-PRINT` (1163),
+`PY3-RAISE-COMMA` (742), `PY3-BUILTIN` (298), `PY3-STDLIB` (277),
+`PY3-EXCEPT-COMMA` (226), `PY3-LONG-SUFFIX` (102), `PY3-DICT-ITER` (89),
+`PY3-OCTAL` (88), `PY3-DIVISION` (77), `PY3-EXEC-STMT` (63),
+`PY3-UR-STRING` (13), `PY3-PARSE` (3, the `platform.python_version()`
+message-text-only cases already in item 2a's entry below),
+`PY3-UNICODE-ESCAPE` (2), `PY3-METACLASS` (1) — every rule already named
+above, plus the two new ones from this session's R1 fix
+(`PY3-UR-STRING`, `PY3-UNICODE-ESCAPE`). `ast.parse` stops at the first
+syntax error per file, which is why one file with several 2-vs-3
+constructs produces several granular findings on 2.7 but only ever one
+`PY3-PARSE` on 3.x. The `PY3-UR-STRING`/`PY3-UNICODE-ESCAPE` case differs
+from the original 7 in its underlying mechanism (a lexer/constant-
+folding rejection, not an absent `ast` node type), but the operational
+conclusion is identical: the source-side rule exists specifically to
+detect the construct that becomes `PY3-PARSE` on the target, so no code
+change on either side can close this while straddling.
+
+AutoSteer also named two hostile-input cases with the same shape, both
+confirmed via direct reproduction to be this exact defect, not a new
+one: `hostile/nul_byte` (2.7's message is `TypeError`-derived -
+`"compile() expected string without null bytes"`; 3.x's is its own
+native `SyntaxError` text - `"source code string cannot contain null
+bytes"` - same rule, same severity, different message, so not
+byte-identical) and `hostile/invalid_coding` (both sides report the
+identical "unknown encoding: ..." text, but with the exact running
+interpreter's own version number embedded via `platform.python_version()`
+- "Python 2.7.18" vs "Python 3.14.9" - the very precision item 2a's own
+entry below found missing and fixed; losing that precision to force
+byte-identical JSON would reintroduce the problem item 2a just closed).
+
 **Resolved, commit `a66f578`: item 2a, real-stdlib parity.** "Findings
 after migration match findings before it except for changes the spec
 items require, each covered by a test." Ran the pre-migration commit
@@ -971,6 +1010,58 @@ against a real reproduction of AutoSteer's own `hostile/nul_byte` case
 Full suite: 146 passed, 2 skipped (2.7.18); 139 passed, 9 skipped
 (3.14.7, 3.14.9). flake8 `--max-complexity 10` clean on all three.
 
+**Investigated, not fixed — flagging for an architect ruling rather than
+guessing: `hostile/deep_nesting` (R1).** AutoSteer: "real 3.6-3.8 cannot
+compile [a file with 150 nested parentheses], and the scan on 3.14
+reports no blocker for 3.6-3.8." Confirmed directly: real `python:3.14-
+slim` parses 150-deep nesting with zero errors and zero findings (no
+rule exists for "this nests too deep for an older Python 3.x minor"), so
+when py2scan itself runs on 3.14 and judges readiness for 3.6-3.8, there
+is genuinely nothing in the scan that could produce a blocker for those
+versions - a real R1 gap, same shape as the `ur`-string/`\u`-escape fix
+above.
+
+The difference: that fix encoded a fixed *language grammar* fact (a
+string prefix is either valid or not, in every CPython build of a given
+major version, with no exceptions found). This one is not a language
+fact - it is a pathological-input *parser resource limit*, and measuring
+it empirically only deepens the problem instead of solving it. Found the
+exact crossover depth against real Docker images for each version,
+expecting a clean "old parser vs. new PEG parser" story (PEG, introduced
+in 3.9, is known to handle deep nesting far better) and instead found
+one that does not generalize:
+
+| Version | Last depth that compiles | First depth that fails |
+|---|---|---|
+| 2.7.18 | 98 | 99 |
+| 3.6.15 | ≤94 (95 already fails) | ≤95 |
+| 3.7 | ≤94 (95 already fails) | ≤95 |
+| 3.8 | 98 | 99 |
+| 3.14.9 | ≥150 (not yet found) | not found |
+
+3.6 and 3.7 fail at a *lower* depth than both 2.7.18 and 3.8, despite
+all four nominally sharing the same old pgen-based C parser - the limit
+does not even track "which parser generation" cleanly, let alone a
+single round number. A hard-coded threshold would be wrong in both
+directions depending on which judged version it is checked against, and
+this was only measured for one specific nesting *shape* (parentheses);
+there is no reason to expect lists, dicts, or chained calls to consume
+the same per-level amount of parser stack, so one threshold would not
+even generalize across shapes. R9's own principle is that per-version
+blocker logic must be reliable static knowledge, not a guess calibrated
+against whichever interpreters happened to be on hand - this limit does
+not currently qualify as that, where the grammar-level 2-vs-3 facts this
+whole tool is built on do.
+
+Not shipping a rule for this. Flagging it as what it is: a real,
+confirmed R1 gap with no proposed fix, for the architect to rule on (an
+accepted limitation with an expiry, a much deeper empirical study across
+every judged version and nesting shape, or something else) - the owner
+decision this session already has on file (questions go to the
+architect, not the owner; implementation choices are the worker's) does
+not cover a case where the worker's own empirical findings cut against
+every implementation choice available.
+
 ## Flip preparation (prepared, not executed — see commit `09a45fd` for the
 one piece of infra this added; nothing below was merged, shipped, or
 changed outside this branch)
@@ -1132,6 +1223,9 @@ any other process (no pickle, cache, queue, or database).
 | 2026-10-23 | 858728c | py2scan | (`file_readiness` fix) | real reproduction of `hostile/nul_byte` (`ok.py` + `t.py`), `python -m py2scan scan --format json` | `file_readiness` = `{"ok.py": [all 10 judged versions], "t.py": []}` — both files now named |
 | 2026-10-23 | 858728c | py2scan | (`file_readiness` fix, full suite) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), 3.14.9 (Docker `py2scan-test314`) | `146 passed, 2 skipped` on 2.7.18; `139 passed, 9 skipped` on 3.14.7 and 3.14.9 |
 | 2026-10-23 | 858728c | py2scan | (`file_readiness` fix, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker, ad hoc `flake8<4`), 3.14.7 (Homebrew venv), and 3.14.9 (Docker `py2scan-test314`, ad hoc `flake8`) | 0 violations, all three |
+| 2026-10-23 | n/a (research, no code change) | py2scan | (item 2b, stdlib-scale confirmation) | real `scanner.scan()` against the same real stdlib tree on 2.7.18 and 3.14.9, diffed by `(file, line, rule)` | 3144 only on 2.7 (every one of 14 already-known rules), 243 only on 3.14 (100% `PY3-PARSE`) — the same already-documented defect, not a new one, now confirmed at 1333-file scale |
+| 2026-10-23 | n/a (research, no code change) | py2scan | (item 2b, `hostile/nul_byte`/`hostile/invalid_coding` reproduction) | `python -m py2scan scan --format json` on both real interpreters against each hostile case | `nul_byte`: `TypeError`-derived message (2.7) vs native `SyntaxError` text (3.14) for the same rule/severity; `invalid_coding`: identical text apart from the embedded exact interpreter version - same defect shape, not a new one |
+| 2026-10-23 | n/a (research, no code change; investigated, not fixed) | py2scan | (AutoSteer CI finding, `hostile/deep_nesting` on 3.14, R1) | real `ast.parse` on real `python:2.7.18-slim`/`3.6.15-slim`/`3.7-slim`/`3.8-slim`/`3.14-slim` across a depth sweep (50, 90, 95, 96, 97, 98, 99, 100, 110, 120, 150 nested parens) | crossover depth: 2.7.18 and 3.8 both 98 OK / 99 fails; 3.6.15 and 3.7 both already fail at 95; 3.14.9 has no failure found up to 150 — does not cleanly track "parser generation"; no rule shipped, flagged for an architect ruling instead of a guessed threshold |
 
 ## Decisions
 - 2026-10-22, owner: `.md`-commit exception for `MIGRATION.md` and
