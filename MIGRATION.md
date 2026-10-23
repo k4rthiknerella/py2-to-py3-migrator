@@ -115,7 +115,7 @@ Waves: none — one unit, no import graph.
   wrapping only, no logic changes · verified `flake8 --max-complexity 10`
   clean (0 complexity, 0 line-length) on both real interpreters.
 
-**Resolved, commit (this one — see Evidence for the hash):**
+**Resolved, commit `8f48071`:**
 - R2: `py2scan/rules.py:check_stdlib_import` now checks whether the
   matched `Import`/`ImportFrom` node is inside a `try` body or a handler
   body (R2's "inside" — not else/finally, not a nested def/lambda) of a
@@ -257,10 +257,10 @@ any other process (no pickle, cache, queue, or database).
 | 2026-10-22 | 5b75c6e | py2scan | 2.7.18→3.14 | (full suite) | `docker build -q -f Dockerfile.test -t py2scan-test . && docker run --rm -v "$PWD":/app -w /app py2scan-test python -m pytest -q -p no:cacheprovider tests` | `74 passed` |
 | 2026-10-22 | 5b75c6e | py2scan | 2.7.18→3.14 | (full suite) | `python3.14 -m pytest -q -p no:cacheprovider tests` (isolated venv wrapping the real installed interpreter) | `69 passed, 5 skipped` (skips are the inherently-Python-2-only-syntax direct-ast.parse tests in `tests/test_rules.py`'s `PY2_ONLY_SYNTAX` marker — these 5 cannot run on Python 3 by construction; see T12 correction below) |
 | 2026-10-22 | 5b75c6e | py2scan | 2.7.18→3.14 | (flake8, not a level) | `flake8 --max-complexity 10 py2scan tests` under both 2.7.18 (Docker, flake8 3.9.2 pinned ad hoc — last release supporting 2.7, not added to requirements-dev.txt) and 3.14.7 | 0 violations of any kind, both interpreters |
-| 2026-10-22 | this commit | py2scan | 2.7.18→3.14 | (T12 fix) | `pytest tests/test_scanner.py` on both real interpreters, after adding 4 end-to-end `scan_file`-based tests (exec/backtick/raise-comma/raise-comma-with-traceback) alongside the existing print one, plus a byte-identical-across-interpreters test for except-comma | `9 passed` on both (2.7.18 and 3.14.7) |
-| 2026-10-22 | this commit | py2scan | 2.7.18→3.14 | (defect-input receipt) | `ast.parse(<input>)` for each of the 7 defect-list inputs, run directly against both real interpreters (2.7.18 via Docker stdin, 3.14.7 via the isolated venv) | all 7 parse successfully on 2.7.18, all 7 raise `SyntaxError` on 3.14.7 — confirms the defect-list claim with a receipt, not an assertion |
-| 2026-10-22 | this commit | py2scan | 2.7.18→3.14 | (R2) | full suite on both real interpreters after implementing R2 | `90 passed` on 2.7.18; `85 passed, 5 skipped` on 3.14.7 |
-| 2026-10-22 | this commit | py2scan | 2.7.18→3.14 | (flake8, not a level) | `flake8 --max-complexity 10 py2scan tests` under both real interpreters, after R2 and T12 fixes | 0 violations of any kind, both interpreters |
+| 2026-10-22 | 8f48071 | py2scan | 2.7.18→3.14 | (T12 fix) | `pytest tests/test_scanner.py` on both real interpreters, after adding 4 end-to-end `scan_file`-based tests (exec/backtick/raise-comma/raise-comma-with-traceback) alongside the existing print one, plus a byte-identical-across-interpreters test for except-comma | `9 passed` on both (2.7.18 and 3.14.7) |
+| 2026-10-22 | 8f48071 | py2scan | 2.7.18→3.14 | (defect-input receipt) | `ast.parse(<input>)` for each of the 7 defect-list inputs, run directly against both real interpreters (2.7.18 via Docker stdin, 3.14.7 via the isolated venv) | all 7 parse successfully on 2.7.18, all 7 raise `SyntaxError` on 3.14.7 — confirms the defect-list claim with a receipt, not an assertion |
+| 2026-10-22 | 8f48071 | py2scan | 2.7.18→3.14 | (R2) | full suite on both real interpreters after implementing R2 | `90 passed` on 2.7.18; `85 passed, 5 skipped` on 3.14.7 |
+| 2026-10-22 | 8f48071 | py2scan | 2.7.18→3.14 | (flake8, not a level) | `flake8 --max-complexity 10 py2scan tests` under both real interpreters, after R2 and T12 fixes | 0 violations of any kind, both interpreters |
 
 ## Decisions
 - 2026-10-22, owner: `.md`-commit exception for `MIGRATION.md` and
