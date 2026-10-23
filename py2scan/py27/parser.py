@@ -22,13 +22,16 @@ CO_FUTURE_UNICODE_LITERALS = 0x20000
 
 
 class Py27SyntaxError(Exception):
-    """What CPython 2.7 raises for source it cannot parse: kind is the exception's name."""
+    """What CPython 2.7 raises for source it cannot parse: kind is the exception's
+    name, lineno the line 2.7 reports (None for its ValueErrors) and at the
+    line the error arose on, when known."""
 
     def __init__(self, msg, lineno, kind="SyntaxError"):
         Exception.__init__(self, msg)
         self.msg = msg
         self.lineno = lineno
         self.kind = kind
+        self.at = lineno
 
 
 class Node(object):

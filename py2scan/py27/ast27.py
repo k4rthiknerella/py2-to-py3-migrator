@@ -776,6 +776,9 @@ class _Builder(object):
             value = self.parsestrplus(n)
         except codecs27.CodecError as e:
             raise _error(n, ("(unicode error) %s" % e.msg)[:127])
+        except Py27SyntaxError as e:  # a ValueError, which 2.7 reports with no line
+            e.at = n.lineno
+            raise
         return Str(value, n.lineno, n.col)
 
     def _number(self, n):

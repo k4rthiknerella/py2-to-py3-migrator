@@ -11,7 +11,11 @@ from py2scan.cli import main
 
 def tree(root, files):
     for rel, data in files.items():
-        path = os.path.join(str(root), *rel.split("/"))
+        if isinstance(rel, bytes):  # a name given as the bytes on disk
+            base = str(root) if str is bytes else os.fsencode(str(root))
+            path = os.path.join(base, *rel.split(b"/"))
+        else:
+            path = os.path.join(str(root), *rel.split("/"))
         if not os.path.isdir(os.path.dirname(path)):
             os.makedirs(os.path.dirname(path))
         with open(path, "wb") as f:
@@ -100,6 +104,13 @@ def test_a_dot_directory_given_as_path_is_scanned(tmpdir):
 def test_parse_error_file_counts_as_a_blocker(tmpdir):
     code, data = run_json(tree(tmpdir, {"bad.py": b"print 'x'\nprint('a', end='')\n", "ok.py": b""}))
     assert (code, data["readiness"], triples(data)) == (1, 50.0, [("bad.py", 2, "PY3-PARSE")])
+
+
+def test_a_literal_2_7_rejects_with_valueerror_is_a_parse_error_at_its_line(tmpdir):
+    # 2.7's compiler raises ValueError, with no line, for an invalid \\x escape in a byte string.
+    code, data = run_json(tree(tmpdir, {"bad.py": b"x = 1\ny = '\\x'\n"}))
+    assert (code, triples(data)) == (1, [("bad.py", 2, "PY3-PARSE")])
+    assert data["findings"][0]["message"] == "does not parse under Python 2.7: invalid \\x escape"
 
 
 def write_config(tmpdir, text):

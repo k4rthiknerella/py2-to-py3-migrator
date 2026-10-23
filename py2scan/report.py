@@ -8,6 +8,7 @@ from jinja2 import Environment
 from markupsafe import Markup
 
 from py2scan.rules import BLOCKER, RULES, WARNING
+from py2scan.source import text_type
 
 
 class Report(object):
@@ -60,7 +61,7 @@ def _text(value):
         return Markup(u"")
     if isinstance(value, bytes):
         value = value.decode("utf-8", "replace")
-    return Markup(unicode(value).replace(u"&", u"&amp;").replace(u"<", u"&lt;").replace(u">", u"&gt;"))
+    return Markup(text_type(value).replace(u"&", u"&amp;").replace(u"<", u"&lt;").replace(u">", u"&gt;"))
 
 
 # C0 controls and DEL as their visible Control Pictures (U+2400 block); tab stays a tab.

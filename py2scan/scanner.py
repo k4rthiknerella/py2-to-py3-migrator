@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-import ast
 import os
-import parser
 import sys
 
 from concurrent.futures import ProcessPoolExecutor
 
 from py2scan.findings import Finding
+from py2scan.py27 import ast27
+from py2scan.py27.parser import Py27SyntaxError, parse_cst
 from py2scan.rules import RULES, Module, check
 from py2scan.source import coding_cookie, line_of_offset, source_lines
 
@@ -16,13 +16,14 @@ class ScanError(Exception):
 
 
 def iter_py_files(root):
-    """Every .py file under root, relative and /-separated, skipping dot directories."""
+    """Every .py file under root (bytes), relative and /-separated, skipping dot directories."""
+    sep = os.sep.encode("ascii")
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith(b"."))
         for name in sorted(filenames):
             full = os.path.join(dirpath, name)
-            if name.endswith(".py") and os.path.isfile(full):  # not a broken symlink
-                yield os.path.relpath(full, root).replace(os.sep, "/")
+            if name.endswith(b".py") and os.path.isfile(full):  # not a broken symlink
+                yield os.path.relpath(full, root).replace(sep, b"/")
 
 
 def display_path(path):
@@ -31,26 +32,24 @@ def display_path(path):
 
 def _parse_error(source, error):
     """(line, reason) for source that Python 2.7 refuses to parse."""
-    if isinstance(error, TypeError) and b"\0" in source:  # compile() refuses NUL bytes
+    if error.kind == "TypeError":  # compile() refuses NUL bytes
         return line_of_offset(source, source.index(b"\0")), "null byte in source"
-    if isinstance(error, MemoryError):  # how 2.7 reports "s_push: parser stack overflow"
+    if error.kind == "MemoryError":  # how 2.7 reports "s_push: parser stack overflow"
         return 1, "too deeply nested for the parser"
-    if isinstance(error, SyntaxError):
-        # An unknown or conflicting PEP 263 encoding is reported at line 0.
-        return error.lineno or coding_cookie(source)[1] or 1, error.msg or str(error)
-    return 1, str(error)
+    # An unknown or conflicting PEP 263 encoding is reported at line 0.
+    return error.at or coding_cookie(source)[1] or 1, error.msg
 
 
 def scan_source(path, source):
     """The findings for one file's source bytes, ordered by line, rule, column."""
     try:
-        tree = ast.parse(source)
-        cst = parser.suite(source).totuple(True, True)
-    except (SyntaxError, TypeError, MemoryError) as e:
+        result = parse_cst(source)
+        tree = ast27.build(result)
+    except Py27SyntaxError as e:
         line, reason = _parse_error(source, e)
         found = [("PY3-PARSE", line, 0, "does not parse under Python 2.7: %s" % reason)]
     else:
-        found = check(Module(tree, cst))
+        found = check(Module(tree, result.cst))
     lines = source_lines(source)
     findings = [Finding(path, lineno, rule_id, RULES[rule_id].severity, message, col,
                         lines[lineno - 1] if 0 < lineno <= len(lines) else None)
