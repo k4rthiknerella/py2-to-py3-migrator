@@ -5,6 +5,7 @@ from py2scan.parsing import parse_source
 from py2scan.rules.ast_rules import (
     check_async_reserved,
     check_backtick,
+    check_bad_unicode_escape,
     check_builtin,
     check_dict_iter,
     check_exec,
@@ -17,6 +18,7 @@ from py2scan.rules.ast_rules import (
     check_ur_string,
 )
 from py2scan.rules.token_rules import (
+    check_deep_nesting,
     check_division,
     check_except_comma,
     check_long_suffix,
@@ -503,3 +505,77 @@ def test_ur_string_elsewhere_does_not_blind_token_rules_to_an_earlier_except_com
 def test_ur_string_elsewhere_does_not_blind_token_rules_to_a_later_except_comma():
     source = "x = ur'z'\ntry:\n    pass\nexcept Exception, e:\n    pass\n"
     assert token_rules(check_except_comma, source) == [(4, "PY3-EXCEPT-COMMA")]
+
+
+def test_incomplete_u_escape_in_plain_string_is_found():
+    # Real repro: CPython 2.7's own json/__init__.py docstring writes the
+    # literal text "\\uXXXX" to describe a format, not to encode a
+    # character - "XXXX" are not hex digits, so this is a SyntaxError
+    # under Python 3's always-unicode plain str, but silently literal
+    # text under Python 2's bytes-like plain str.
+    assert rules(check_bad_unicode_escape, 'x = "escaped with \\uXXXX sequences"\n') == [
+        (1, "PY3-BAD-ESCAPE"),
+    ]
+
+
+def test_complete_u_escape_in_plain_string_is_not_found():
+    assert rules(check_bad_unicode_escape, 'x = "\\u0041"\n') == []
+
+
+def test_incomplete_capital_u_escape_is_found():
+    # \U needs exactly 8 hex digits; this has only 4 before a non-hex "X".
+    assert rules(check_bad_unicode_escape, 'x = "\\U0041XYZ"\n') == [(1, "PY3-BAD-ESCAPE")]
+
+
+def test_complete_capital_u_escape_is_not_found():
+    assert rules(check_bad_unicode_escape, 'x = "\\U00010041"\n') == []
+
+
+def test_incomplete_named_escape_is_found():
+    assert rules(check_bad_unicode_escape, 'x = "\\N{}"\n') == [(1, "PY3-BAD-ESCAPE")]
+
+
+def test_incomplete_escape_in_raw_string_is_not_found():
+    assert rules(check_bad_unicode_escape, 'x = r"\\uXXXX"\n') == []
+
+
+def test_incomplete_escape_in_byte_string_is_not_found():
+    assert rules(check_bad_unicode_escape, 'x = b"\\uXXXX"\n') == []
+
+
+def test_incomplete_escape_in_unicode_string_is_found():
+    assert rules(check_bad_unicode_escape, 'x = u"\\uXXXX"\n') == [(1, "PY3-BAD-ESCAPE")]
+
+
+def test_escaped_backslash_before_u_is_not_a_bad_escape():
+    # "\\\\u1234" in source is an escaped backslash followed by the
+    # literal text "u1234", never a \\u escape attempt.
+    assert rules(check_bad_unicode_escape, 'x = "\\\\uXXXX"\n') == []
+
+
+def test_ordinary_escapes_are_not_flagged():
+    assert rules(check_bad_unicode_escape, 'x = "\\n\\t\\x41"\n') == []
+
+
+def test_deep_nesting_below_threshold_is_not_found():
+    source = "x = " + "(" * 40 + "1" + ")" * 40 + "\n"
+    assert token_rules(check_deep_nesting, source) == []
+
+
+def test_deep_nesting_above_threshold_is_found():
+    source = "x = " + "(" * 150 + "1" + ")" * 150 + "\n"
+    assert token_rules(check_deep_nesting, source) == [(1, "PY3-DEEP-NESTING")]
+
+
+def test_deep_nesting_is_not_blocked_for_versions_past_38():
+    source = "x = " + "(" * 150 + "1" + ")" * 150 + "\n"
+    tree, tokens = parsed(source)
+    findings = list(check_deep_nesting("m.py", tree, tokens, V))
+    assert len(findings) == 1
+    assert (3, 9) not in findings[0].versions
+    assert (3, 6) in findings[0].versions and (3, 8) in findings[0].versions
+
+
+def test_deep_nesting_mixed_bracket_types_is_found():
+    source = "x = " + "[" * 150 + "1" + "]" * 150 + "\n"
+    assert token_rules(check_deep_nesting, source) == [(1, "PY3-DEEP-NESTING")]

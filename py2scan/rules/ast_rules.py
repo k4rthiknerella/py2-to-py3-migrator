@@ -149,6 +149,51 @@ def check_ur_string(path, tree, tokens, versions):
                           "Python 3" % node.value, versions)
 
 
+_STRING_PREFIX_RE = re.compile(r'^[a-zA-Z]*')
+_BAD_ESCAPE_RE = re.compile(
+    r'\\\\'                       # an escaped backslash: never an escape start
+    r'|\\u[0-9A-Fa-f]{0,4}'       # \u needs exactly 4 hex digits
+    r'|\\U[0-9A-Fa-f]{0,8}'       # \U needs exactly 8 hex digits
+    r'|\\N\{[^}]*\}?'             # \N{...} needs a non-empty, closed name
+    r'|\\.')                      # any other escape: not this rule's concern
+
+
+def _has_malformed_unicode_escape(text):
+    for m in _BAD_ESCAPE_RE.finditer(text):
+        g = m.group()
+        if g.startswith(u"\\u") and len(g) != 6:
+            return True
+        if g.startswith(u"\\U") and len(g) != 10:
+            return True
+        if g.startswith(u"\\N{") and (not g.endswith(u"}") or g == u"\\N{}"):
+            return True
+    return False
+
+
+def check_bad_unicode_escape(path, tree, tokens, versions):
+    """A plain (unprefixed) or `u"..."` string literal containing `\\u`,
+    `\\U`, or `\\N{...}` not followed by a complete, valid escape: e.g. a
+    docstring that writes the literal text "\\uXXXX" to describe a format,
+    not to encode a character (real repro: CPython 2.7's own
+    json/__init__.py, line 133). Python 2's plain `str` is bytes-like and
+    never treats `\\u`/`\\U`/`\\N` as escapes at all - whatever follows is
+    left as literal text, valid or not. Python 3's plain `str` is always
+    unicode, so the same bytes are mandatory, validated escapes: an
+    incomplete one is a SyntaxError, not merely a changed meaning. A raw
+    (`r`) or byte (`b`) prefix is excluded - raw strings never process any
+    escape, and `\\u`/`\\U`/`\\N` were never byte-string escapes in either
+    version, so nothing changes for those two prefixes."""
+    for node in _nodes(tree, "string"):
+        prefix = _STRING_PREFIX_RE.match(node.value).group().lower()
+        if "r" in prefix or "b" in prefix:
+            continue
+        if _has_malformed_unicode_escape(node.value):
+            yield Finding(path, node.start_pos[0], "PY3-BAD-ESCAPE", "blocker",
+                          "incomplete \\u/\\U/\\N escape in a non-raw string; "
+                          "a SyntaxError in Python 3, literal text in "
+                          "Python 2", versions)
+
+
 _RESERVED_SINCE_37 = frozenset(["async", "await"])
 
 
@@ -669,4 +714,4 @@ def check_keyword_binding(path, tree, tokens, versions):
 AST_RULES = [check_print, check_exec, check_backtick, check_raise_comma,
              check_dict_iter, check_builtin, check_stdlib, check_metaclass,
              check_tuple_param, check_async_reserved, check_keyword_binding,
-             check_ur_string]
+             check_ur_string, check_bad_unicode_escape]
