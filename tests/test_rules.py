@@ -182,6 +182,51 @@ def test_builtin_call_is_still_found_next_to_an_attribute_of_the_same_name():
     assert rules(check_builtin, "x = file(chunk.file)\n") == [(1, "PY3-BUILTIN")]
 
 
+def test_builtin_named_method_does_not_shadow_the_builtin_inside_its_own_body():
+    # Independent check, round 2, item 3. Real repro: CPython 2.7's own
+    # code.py defines InteractiveInterpreter.raw_input(self, prompt),
+    # whose body calls the bare name raw_input() - the builtin, since a
+    # method can never see its own class's attributes unqualified. The
+    # old scope model walked straight past the classdef looking for an
+    # enclosing funcdef, found none, and wrongly bound "raw_input" at
+    # module scope - suppressing every real builtin use of raw_input in
+    # the whole module, not just inside this one method.
+    src = (
+        "class C(object):\n"
+        "    def raw_input(self, prompt=\"\"):\n"
+        "        return raw_input(prompt)\n"
+    )
+    assert rules(check_builtin, src) == [(3, "PY3-BUILTIN")]
+
+
+def test_builtin_named_method_does_not_leak_to_module_scope_elsewhere():
+    src = (
+        "class C(object):\n"
+        "    def raw_input(self, prompt=\"\"):\n"
+        "        pass\n"
+        "x = raw_input('> ')\n"
+    )
+    assert rules(check_builtin, src) == [(4, "PY3-BUILTIN")]
+
+
+def test_builtin_shadowed_by_from_import_as_is_not_found():
+    # Independent check, round 2, item 3. Real repro: pip's vendored
+    # urllib3/response.py does `from .packages.six import string_types
+    # as basestring` (six's own Python-3 shim) and later reads the bare
+    # name basestring - correctly the alias, not the real builtin. The
+    # "import_as_name" parso node type ("from M import X as Y") was
+    # never recognized as a binding at all - distinct from
+    # "dotted_as_name" ("import X as Y"), which was - so the alias
+    # target itself was flagged as a builtin use, and so was every
+    # later bare reference to it.
+    src = (
+        "from six import string_types as basestring\n"
+        "def f(body):\n"
+        "    return isinstance(body, (basestring, bytes))\n"
+    )
+    assert rules(check_builtin, src) == []
+
+
 def test_stdlib_import_is_found():
     assert rules(check_stdlib, "import urllib2\n") == [(1, "PY3-STDLIB")]
 

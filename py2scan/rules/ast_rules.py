@@ -457,6 +457,33 @@ def _enclosing_funcdef(node):
     return None
 
 
+def _enclosing_scope(node):
+    """The nearest enclosing funcdef or classdef, whichever is closer -
+    unlike _enclosing_funcdef, this does not skip over an intervening
+    classdef. A name bound directly in a class's suite (R3): a method's
+    own name, a nested class's own name, or a plain assignment target
+    written straight in the class body (not inside any of that class's
+    own methods) is a class attribute, never visible as a bare name
+    anywhere else - not at module scope even when the class is defined
+    at module level, and not in whatever function the class itself
+    happens to be nested in. check_builtin treats this scope as a dead
+    end for any binding found there (see _ScopeCollector.add_target/
+    add_outer_name): real repro, CPython 2.7's own code.py defines
+    InteractiveInterpreter.raw_input(self, prompt) whose body calls the
+    bare name raw_input() - the builtin, since a method can never see
+    its own class's attributes unqualified. Treating that method's own
+    name as bound at module scope (the old behavior, since
+    _enclosing_funcdef skipped straight past the classdef to find
+    nothing beyond it) wrongly suppressed every real builtin use of
+    raw_input in the whole module, not just inside that one method."""
+    p = node.parent
+    while p is not None:
+        if p.type in ("funcdef", "classdef"):
+            return p
+        p = p.parent
+    return None
+
+
 class _ScopeCollector(object):
     """Collects the binding facts _collect_scopes needs, one node type at a
     time (see _SCOPE_VISITORS). Each visit_* method handles exactly one
@@ -469,13 +496,20 @@ class _ScopeCollector(object):
         self.declared_globals_by_func = {}
         self.module_level_names = set()
 
+    def _bind_in_enclosing_scope(self, scope, name):
+        """scope is whatever _enclosing_scope found: None (module level),
+        a funcdef (ordinary local), or a classdef - a class attribute,
+        bound nowhere check_builtin's shadowing lookup ever looks (see
+        _enclosing_scope's own comment), so a classdef scope binds
+        nothing as far as this collector is concerned."""
+        if scope is None:
+            self.module_level_names.add(name)
+        elif scope.type == "funcdef":
+            self.local_targets_by_func.setdefault(scope, set()).add(name)
+
     def add_target(self, leaf):
         self.target_leaves.add(leaf)
-        func = _enclosing_funcdef(leaf)
-        if func is None:
-            self.module_level_names.add(leaf.value)
-        else:
-            self.local_targets_by_func.setdefault(func, set()).add(leaf.value)
+        self._bind_in_enclosing_scope(_enclosing_scope(leaf), leaf.value)
 
     def add_param(self, leaf, func):
         self.target_leaves.add(leaf)
@@ -483,11 +517,7 @@ class _ScopeCollector(object):
 
     def add_outer_name(self, def_or_class_node, name_leaf):
         self.target_leaves.add(name_leaf)
-        outer_func = _enclosing_funcdef(def_or_class_node)
-        if outer_func is None:
-            self.module_level_names.add(name_leaf.value)
-        else:
-            self.local_targets_by_func.setdefault(outer_func, set()).add(name_leaf.value)
+        self._bind_in_enclosing_scope(_enclosing_scope(def_or_class_node), name_leaf.value)
 
     def visit_expr_stmt(self, node):
         children = node.children
@@ -613,7 +643,10 @@ def _dotted_as_bound_leaves(node):
         yield node
     elif node.type == "dotted_name":
         yield node.children[0]
-    elif node.type == "dotted_as_name":
+    elif node.type in ("dotted_as_name", "import_as_name"):
+        # "import X as Y" (dotted_as_name) and "from M import X as Y"
+        # (import_as_name) are distinct parso node types for what binds
+        # the same way: the alias if there is one, else the bare name.
         alias = _as_alias(node)
         if alias is not None:
             yield alias
