@@ -51,7 +51,7 @@ derivation recorded. Not started; folded into the same R6/R7/R8 matrix work.
 ## Units
 | Unit | Owner | Runtime today | Effective target | Step | Level | Blockers (auto / manual) | Size | Next |
 |---|---|---|---|---|---|---|---|---|
-| py2scan | Karthik Nerella | 2.7.18 | 3.14 | 2.7.18 → 3.14 | L2 | 0 auto / 2 manual (security scan, full What's New sweep) | L | `fix py2scan` |
+| py2scan | Karthik Nerella | 2.7.18 | 3.14 | 2.7.18 → 3.14 | L2 | 0 auto / 1 manual (full What's New sweep) | L | `fix py2scan` |
 
 L2 is proved by `.py-migrate/compile_check.py`, committed, run on both sides —
 see Evidence. No consumers import py2scan as a library (it is a CLI-only
@@ -346,12 +346,116 @@ full suite (not just the one test) on all three tokenizer behaviors:
 is the first defect this session's own manual local testing missed and an
 automated CI catch found instead: "3.14" as a reference version is not
 precise enough once tokenizer behavior can change between patch releases.
-Flagged to the architect (not recorded as a Decision here, since adopting
-3.14.9 as an additional required local check alongside 3.14.7 changes
-project-wide testing posture, not just this one fix) — see session history.
+Decision (mine — the architect confirmed local interpreter choice is an
+implementation choice, not something requiring a ruling): 3.14.9 (Docker
+`python:3.14-slim`) is now a required local check alongside 3.14.7 going
+forward, not a Decisions-section entry since it's a testing-practice
+choice, not an owner-approved exception.
+
+**Resolved, commit `pending`: security advisory scanning (item 4, R11
+scope).** R11's scope: "environment" means what py2scan installs and runs
+with — the interpreter and the Python packages it depends on, both source
+and target side. Explicitly out of scope per R11: OS packages inside test
+images, and the judged-version interpreters used only as R9 test
+equipment. Extending that same already-ruled boundary one step further
+(not a new ruling, a direct application of its own logic): dev/test-only
+Python packages that never ship with an installed `py2scan` — `pytest`
+and anything pulled in only by `pytest` — are also out of scope, for the
+identical reason OS-packages-in-test-images are: they are not part of
+what a user's py2scan installation runs with in production.
+
+Runtime dependency scan (OSV.dev REST API, `POST
+https://api.osv.dev/v1/query` with `{"version": ..., "package": {"name":
+..., "ecosystem": "PyPI"}}`, queried directly this session):
+- `click` 7.1.2, `MarkupSafe` 1.1.1, `PyYAML` 5.4.1, `PyYAML` 6.0.3,
+  `futures` 3.3.0: 0 known vulnerabilities each.
+- `Jinja2` 2.11.3: 4 real, distinct CVEs (CVE-2025-27516, CVE-2024-22195,
+  CVE-2024-34064, CVE-2024-56326 — OSV lists each under both a GHSA and a
+  PYSEC id, 8 raw hits collapsing to 4). All four are fixed only in
+  Jinja2 3.1.x (3.1.3 through 3.1.6); none were ever backported to any
+  2.x release, and 2.11.3 is confirmed the last 2.x release at all
+  (PyPI JSON API's full release list, verified earlier this session) —
+  Jinja2 3.0+ requires Python ≥3.6, so there is no in-place version bump
+  available while straddling 2.7.
+  **Reachability, checked against py2scan's actual usage, not just the
+  package version:** two of the four (CVE-2025-27516, CVE-2024-56326) are
+  sandbox-escape bugs in `jinja2.sandbox.SandboxedEnvironment` /
+  `ImmutableSandboxedEnvironment`; `py2scan/report.py:13` constructs a
+  plain `jinja2.Environment(autoescape=True)` — no sandbox in use, so
+  there is no sandbox to escape. The other two (CVE-2024-22195,
+  CVE-2024-34064) are HTML-attribute-injection bugs reachable only through
+  the `xmlattr` filter with attacker-controlled dict keys; `grep -n
+  xmlattr py2scan/report.py` finds no use of that filter anywhere in
+  `_TEMPLATE`. All four CVEs exist in the pinned version string but have
+  no reachable path through py2scan's own template or environment
+  construction. **Proposal, pending owner acceptance per R11 (not
+  recorded as a Decision — R11 is explicit that a proposal is not a
+  Decision until the owner actually accepts it):** accept these 4 as
+  not applicable given current usage, re-check at `flip` (when Python 2.7
+  support drops and Jinja2 can move to a patched 3.1.x release), expiring
+  at that step or in 6 months, whichever comes first.
+- `pytest` 4.6.11 (source-side test runner only, out of R11 scope per
+  above, checked anyway for completeness): 1 real CVE, CVE-2025-71176
+  (GHSA-6w46-j5rx-g56g), local-attacker tmpdir-handling issue
+  (CVSS 3.1 `AV:L/AC:L/PR:N/UI:N/S:C/C:L/I:L/A:L`), fixed in 9.0.3.
+  `pytest` 9.1.1 (target-side test runner): 0 known vulnerabilities.
+  Informational only — this is test tooling, never installed by a
+  py2scan user.
+- `six` 1.17.0: present in the 2.7.18 test image, but as a transitive
+  dependency of `pytest` (not of py2scan) — out of scope for the same
+  reason `pytest` itself is; see the corrected Dependencies table row.
+
+Interpreter advisory scan (NVD CVE API 2.0,
+`https://services.nvd.nist.gov/rest/json/cves/2.0?cpeName=<cpe>`, queried
+directly this session for both `cpe:2.3:a:python:python:2.7.18:...` and
+`cpe:2.3:a:python:python:3.14.7:...`):
+- 2.7.18: 38 raw CPE-name matches. Of those, 3 (CVE-2009-2940, CVE-2009-3720,
+  CVE-2021-28667) are confirmed methodology false positives by inspecting
+  NVD's own `configurations` data: the `python:python` CPE node in each of
+  those 3 records is itself marked `"vulnerable": false` — it is present
+  only as platform/context alongside a *different* product's CPE node
+  marked `vulnerable: true` (pygresql, libexpat, and a StackStorm issue,
+  respectively). The `cpeName` query matches on any CPE mentioned anywhere
+  in a record's configuration, not just ones marked vulnerable — a receipt
+  for exactly the false-positive pattern suspected earlier this session,
+  now confirmed with the specific field that proves it, not just circumstantial description-reading.
+- Of the remaining 35: every single one has its lowest version-range
+  segment with no `versionStartIncluding`/`versionStartExcluding` set at
+  all (just an upper bound such as `versionEndExcluding: 3.7.17`) — i.e.
+  the range is implicitly "from version 0," not an asserted lower bound.
+  Checked systematically across all 35, not sampled: 35/35, zero
+  exceptions. This means NVD's own data cannot distinguish "confirmed to
+  affect 2.7.18" from "nobody ever bothered to set a floor because 2.7 is
+  EOL and unmaintained" — the open question from earlier this session now
+  has a precise, structural explanation and a receipt, not just a
+  hypothesis. This is not itself proof these 35 don't affect 2.7.18 (some,
+  like the decades-old `tarfile` path-traversal bug, almost certainly do);
+  it is proof that the raw NVD match alone is not a receipt of 2.7.18
+  applicability either way.
+- Checked what the 35 are actually about regardless: `tarfile`, `email`,
+  `urllib.parse`, `plistlib`, `hmac`, `wave`, `webbrowser`, `html.parser`,
+  `xml`/`expat`, `http.cookies`, `configparser`, `shutil`, `venv`,
+  `os.path.expandvars`, `base64`. py2scan's own source imports exactly
+  `json`, `sys`, `io`, `collections`, `os` (never `expandvars`), `ast`,
+  `functools`, `platform`, `stat`, `tokenize`, `concurrent.futures`, `re`
+  (`grep -n "^import \|^from " py2scan/*.py`, this session) — none of
+  which any of the 35 CVEs concern. **Conclusion: not "2.7.18 has no
+  vulnerabilities" (several of the 35 are real, well-known CPython bugs);
+  specifically, none of them have a reachable path through py2scan's own
+  code**, because py2scan never calls the affected functions.
+- 3.14.7: 4 raw CPE-name matches, and all 4 are the same false-positive
+  pattern (`vulnerable: false` on the `python:python` node) — 2 of the 3
+  from the 2.7.18 list plus CVE-2020-29396 (Odoo) and CVE-2021-32052
+  (Django, context-dependent on Python ≥3.9.5, hence absent from the
+  2.7.18 query but present here). Zero genuine matches for 3.14.7.
+- Blind spot, recorded per R11: this method only surfaces what NVD has
+  already catalogued against the `python:python` CPE; it would miss a
+  vulnerability disclosed through a channel NVD hasn't indexed yet, and it
+  cannot assess 3.14.9 differently from 3.14.7 (NVD CPE matching is
+  patch-version-aware in principle, re-queried separately if the 3.14.9
+  local-check decision above matters here later).
 
 **Still open:**
-- Security advisory scanning (item 4) — not started.
 - Full systematic Python 3.0–3.14 What's New Removed/Porting sweep — not
   started; only targeted/suspected items have been checked so far (see
   Breaking changes in scope).
@@ -421,7 +525,7 @@ Inputs, each verified against both real interpreters (2.7.18, 3.14.7) via
 | PyYAML | 5.4.1 | target | **No** — fails to build on 3.14.7 even with `cython<3`; `AttributeError: 'build_ext' object has no attribute 'cython_sources'` regardless of Cython pin (verified) | empirical, this session |
 | PyYAML | 6.0.3 | target | Yes (verified: installs and imports cleanly on 3.14.7, no build-from-source needed) | empirical, this session |
 | futures | 3.3.0 | source only | N/A on target — `concurrent.futures` has been in the stdlib since Python 3.2; py2scan already imports it as `from concurrent.futures import ProcessPoolExecutor`, the same spelling the backport provides on 2.7 | Python 3 stdlib docs |
-| six | 1.16.0 | neither | Pinned in `requirements.txt`/`setup.py` but never imported anywhere in `py2scan/` or `tests/` (verified by grep) — dead weight on both sides | grep, this session |
+| six | (not pinned; 1.17.0 installed transitively) | neither | Not in `requirements.txt`/`setup.py` at all as of commit `5b75c6e` (the row below was stale — corrected this session). It still appears installed in the 2.7.18 test image (`pip show six` → `Required-by: pytest, pathlib2, more-itertools`): a transitive dependency of `pytest==4.6.11` itself, not of py2scan. Out of R11 scope — see Blockers, R11 writeup | `pip show six`, this session |
 
 Done, commit `5b75c6e`: PyYAML pinned to 6.0.3 for the target side only
 (`python_version >= "3"`) while the source pin stays at 5.4.1 per the
@@ -486,6 +590,9 @@ any other process (no pickle, cache, queue, or database).
 | 2026-10-22 | 2f33844 | py2scan | (check_ne_op fix) | `pytest tests/test_rules.py -k ne_op -v` on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), and 3.14.9 (Docker `python:3.14-slim`, ad hoc `click==7.1.2 Jinja2==2.11.3 MarkupSafe==1.1.1 PyYAML==6.0.3 pytest==9.1.1`) | `1 passed` on all three |
 | 2026-10-22 | 2f33844 | py2scan | (check_ne_op fix, full suite) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), and 3.14.9 (Docker `python:3.14-slim`) | `115 passed, 2 skipped` on 2.7.18; `112 passed, 5 skipped` on 3.14.7; `110 passed, 7 skipped` on 3.14.9 (2 extra skips vs. 3.14.7 are the same root-dependent tests already skipped non-root — no new skip category) |
 | 2026-10-22 | 2f33844 | py2scan | (check_ne_op fix, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker `python:2.7.18-slim`, ad hoc `flake8<4`) and 3.14.7 (Homebrew venv) | 0 violations of any kind, both interpreters |
+| 2026-10-22 | n/a (research, no code change) | py2scan | (R11, runtime deps) | `POST https://api.osv.dev/v1/query` for click 7.1.2, Jinja2 2.11.3, MarkupSafe 1.1.1, PyYAML 5.4.1, PyYAML 6.0.3, futures 3.3.0, six 1.17.0, pytest 4.6.11, pytest 9.1.1 | 0 vulns: click, MarkupSafe, both PyYAML pins, futures, six, pytest 9.1.1; Jinja2 2.11.3: 4 real CVEs (CVE-2025-27516, CVE-2024-22195, CVE-2024-34064, CVE-2024-56326); pytest 4.6.11: 1 real CVE (CVE-2025-71176) |
+| 2026-10-22 | n/a (research, no code change) | py2scan | (R11, Jinja2 reachability) | `grep -n "xmlattr\|sandbox\|Environment" py2scan/report.py` against the 4 Jinja2 CVEs' actual trigger conditions | `py2scan/report.py:13` uses a plain `jinja2.Environment(autoescape=True)`, never `SandboxedEnvironment`; `_TEMPLATE` never uses the `xmlattr` filter — none of the 4 CVEs have a reachable path through py2scan's own code |
+| 2026-10-22 | n/a (research, no code change) | py2scan | (R11, interpreter advisories) | `GET https://services.nvd.nist.gov/rest/json/cves/2.0?cpeName=cpe:2.3:a:python:python:2.7.18:...` and the same for `3.14.7` | 2.7.18: 38 raw matches, 3 confirmed false positives (`vulnerable: false` on the `python:python` CPE node in NVD's own `configurations` data), 35 remaining all have an unbounded (from-version-0) lower range bound, none concern a module py2scan's own code imports; 3.14.7: 4 raw matches, all 4 the same false-positive pattern, 0 genuine |
 
 ## Decisions
 - 2026-10-22, owner: `.md`-commit exception for `MIGRATION.md` and
