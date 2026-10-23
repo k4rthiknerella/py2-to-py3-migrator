@@ -24,6 +24,8 @@ from py2scan.rules import (
     check_print,
     check_raise_comma,
     check_stdlib_import,
+    check_unicode_escape,
+    check_ur_string,
 )
 
 
@@ -115,6 +117,84 @@ def test_old_octal_with_long_suffix_fires_both_rules():
 def test_except_comma_is_found():
     src = "try:\n    pass\nexcept Exception, e:\n    pass\n"
     assert token_rules(check_except_comma, src) == [(3, "PY3-EXCEPT-COMMA")]
+
+
+@PY2_ONLY_SYNTAX
+def test_ur_string_is_found():
+    # Found via item 2a's real-stdlib parity scan: posixpath.py and
+    # lib2to3/fixes/fix_unicode.py both use this and real Python 3 cannot
+    # compile either (R1) - no existing rule caught it before this.
+    # Python-2-only at the tokenize level, not just ast.parse: Python
+    # 3.14's own tokenize module raises TokenError for a ur-prefixed
+    # string (confirmed empirically), so this can never reach
+    # check_ur_string in the real scan_file pipeline on Python 3 either -
+    # ast.parse's SyntaxError (PY3-PARSE) is reported first, same as
+    # every other PY2_ONLY_SYNTAX case.
+    assert token_rules(check_ur_string, r"x = ur'\$(\w+)'" + "\n") == \
+        [(1, "PY3-UR-STRING")]
+
+
+@PY2_ONLY_SYNTAX
+def test_ur_string_every_u_before_r_ordering_is_found():
+    for prefix in ("ur", "Ur", "uR", "UR"):
+        src = "x = %s'test'\n" % prefix
+        assert token_rules(check_ur_string, src) == [(1, "PY3-UR-STRING")], \
+            prefix
+
+
+def test_plain_raw_string_is_not_found():
+    assert token_rules(check_ur_string, "x = r'test'\n") == []
+
+
+def test_plain_unicode_string_is_not_found():
+    assert token_rules(check_ur_string, "x = u'test'\n") == []
+
+
+def test_invalid_unicode_escape_is_found():
+    # Found via item 2a's real-stdlib parity scan: json/__init__.py's own
+    # docstring uses this as placeholder text, and real Python 3 cannot
+    # compile the file (R1) - no existing rule caught it before this.
+    src = '''x = """text with \\uXXXX in it"""\n'''
+    assert token_rules(check_unicode_escape, src) == \
+        [(1, "PY3-UNICODE-ESCAPE")]
+
+
+def test_valid_unicode_escape_is_not_found():
+    assert token_rules(check_unicode_escape, "x = '\\u0041'\n") == []
+
+
+def test_invalid_unicode_escape_in_byte_string_is_not_found():
+    # b'...' never processes \\u on either interpreter - confirmed
+    # empirically identical on both sides, so this is not a 2-vs-3
+    # difference to report.
+    assert token_rules(check_unicode_escape, "x = b'\\uXXXX'\n") == []
+
+
+def test_invalid_unicode_escape_in_raw_string_is_not_found():
+    assert token_rules(check_unicode_escape, "x = r'\\uXXXX'\n") == []
+
+
+def test_invalid_unicode_escape_in_u_string_is_not_found():
+    # A u-prefixed string already requires a valid \\u escape under
+    # Python 2.7 too (SyntaxError on both sides) - not a 2-vs-3
+    # difference.
+    assert token_rules(check_unicode_escape, "x = u'\\uXXXX'\n") == []
+
+
+def test_escaped_backslash_before_u_is_not_a_unicode_escape():
+    # \\\\u is one escaped literal backslash followed by plain text
+    # "u0041" - not a \\u escape at all, on either interpreter.
+    assert token_rules(check_unicode_escape, "x = '\\\\u0041'\n") == []
+
+
+def test_invalid_unicode_name_escape_is_found():
+    assert token_rules(check_unicode_escape, "x = '\\N{}'\n") == \
+        [(1, "PY3-UNICODE-ESCAPE")]
+
+
+def test_valid_unicode_name_escape_is_not_found():
+    assert token_rules(
+        check_unicode_escape, "x = '\\N{BULLET}'\n") == []
 
 
 def test_except_as_is_not_found():

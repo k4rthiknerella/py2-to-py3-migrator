@@ -22,7 +22,7 @@ Options:
   `severity: {rule id: blocker|warning}`; readiness and the exit code follow it.
 - `--jobs N` - scan files in parallel (default 4); output is identical for any N.
 
-Status: 14 rules.
+Status: 16 rules.
 
 | Rule | Severity |
 |---|---|
@@ -36,7 +36,9 @@ Status: 14 rules.
 | PY3-LONG-SUFFIX | blocker |
 | PY3-DICT-ITER | blocker |
 | PY3-BUILTIN | blocker |
-| PY3-STDLIB | blocker |
+| PY3-STDLIB | blocker (warning if the import is inside a try whose handler catches ImportError) |
+| PY3-UR-STRING | blocker |
+| PY3-UNICODE-ESCAPE | blocker |
 | PY3-DIVISION | warning |
 | PY3-METACLASS | warning |
 | PY3-PARSE | blocker (exclusive: a file that fails to parse gets only this finding) |

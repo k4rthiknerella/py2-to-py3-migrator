@@ -866,6 +866,66 @@ standing CI-run script.
 130 passed, 2 skipped (2.7.18); 125 passed, 7 skipped (3.14.7, 3.14.9).
 flake8 `--max-complexity 10` clean on all three.
 
+**Resolved, commit `pending`: two new rules, `PY3-UR-STRING` and
+`PY3-UNICODE-ESCAPE`, closing an R1 violation AutoSteer CI's own
+real-interpreter check found on real stdlib files that this session's
+own item-2a diff (above) could not, by construction - that check only
+compares py2scan's output against its own earlier commit, so it cannot
+catch a defect present on both sides.** AutoSteer reported, against the
+real stdlib tree at `/usr/local/lib/python2.7`: real 3.6.15 through
+3.15.1 cannot compile `json/__init__.py`, `lib2to3/fixes/fix_unicode.py`,
+or `posixpath.py`, yet the 2.7 scan reported no blocker for any of
+3.6–3.15 on any of the three — a direct violation of R1's "never
+reported free of blockers" guarantee.
+
+Root cause, two distinct Python-2-only lexical constructs, neither
+caught by any existing rule:
+- `posixpath.py:299` and `fix_unicode.py` (4 occurrences) use a
+  raw-unicode string prefix (`ur'...'`). Confirmed empirically on real
+  2.7.18: only the `u`-before-`r` ordering is valid (`ur`/`Ur`/`uR`/`UR`;
+  `ru`/`Ru`/`rU`/`RU` is a `SyntaxError` even on 2.7.18). Confirmed on
+  real 3.14.9: every one of those 4 orderings is `'u' and 'r' prefixes
+  are incompatible` — and not just at `ast.parse`, but inside
+  `tokenize` itself (confirmed empirically: `tokenize.tokenize()` on
+  `ur'test'` under 3.14.7 raises `TokenError`, not just a later
+  `SyntaxError`) - `ur` has never been valid in Python 3, even after
+  3.3 restored `u` as a no-op prefix.
+- `json/__init__.py`'s own docstring (line 133) uses `` \uXXXX `` as
+  human-readable placeholder text inside a bare (unprefixed) string
+  literal. Confirmed empirically: a bare string's `\u`/`\U`/`\N{...}`
+  escape is inert, unprocessed text on 2.7.18 (Python 2 only processes
+  those escapes inside a `u`-prefixed string), but every non-raw,
+  non-bytes string on Python 3 is unicode and always processes them, so
+  an invalid one (`\uXXXX` is not 4 hex digits) is a `SyntaxError`.
+  Confirmed empirically that a `b'...'`-prefixed string behaves
+  identically on both interpreters (neither processes `\u`), so it must
+  not be flagged - only a fully bare string (no `u`, `r`, or `b` in its
+  prefix) has this 2-vs-3 difference.
+
+Both added as new `TOKEN_RULES` in `py2scan/rules.py`
+(`check_ur_string`, `check_unicode_escape`), following the existing
+`check_ne_op`/`check_octal` pattern - both are 2-vs-3 boundary issues
+(every judged version, not R6-scoped to a specific one), and both can
+only ever fire when `ast.parse` already succeeded, i.e. only on the 2.7
+side of a straddle, since every Python 3.x already rejects both
+constructs at `ast.parse` (or earlier, for `ur`-strings). Verified the
+fix directly against the exact 3 real files AutoSteer named, inside the
+2.7.18 image: `posixpath.py` → 1 `PY3-UR-STRING` blocker;
+`fix_unicode.py` → 4 `PY3-UR-STRING` blockers; `json/__init__.py` → 1
+`PY3-UNICODE-ESCAPE` blocker. 12 new tests (`tests/test_rules.py`),
+including the exact `ur`-ordering matrix, the byte/raw/u-prefix
+exclusions, an escaped-backslash-before-`u` non-match, and the
+`\N{...}` name-escape form. The two `ur`-string "found" tests are marked
+with the existing `PY2_ONLY_SYNTAX` skip (same reasoning as the
+print/exec/backtick/raise-comma tests already using it): calling
+`_tokenize()` directly on `ur'...'` source fails on Python 3 for a
+reason that has nothing to do with this rule's own logic, and the real
+`scan_file` pipeline never reaches a `TOKEN_RULE` for this input on
+Python 3 anyway, since `ast.parse` already raises first.
+
+Full suite: 142 passed, 2 skipped (2.7.18); 135 passed, 9 skipped
+(3.14.7, 3.14.9). flake8 `--max-complexity 10` clean on all three.
+
 ## Flip preparation (prepared, not executed — see commit `09a45fd` for the
 one piece of infra this added; nothing below was merged, shipped, or
 changed outside this branch)
@@ -1018,6 +1078,11 @@ any other process (no pickle, cache, queue, or database).
 | 2026-10-23 | n/a (research, no code change) | py2scan | (item 2a, real stdlib parity, root cause) | `git worktree add --detach .py-migrate/out/before_worktree 0e39731`; two driver scripts calling `scanner.scan()` directly against `/usr/local/lib/python2.7` inside `py2scan-test` (2.7.18), once per commit (`0e39731`, `HEAD`); a Python diff script keyed on `(file, line, rule)` | old: 1333 files, 3704 findings; new: 1333 files, 3950 findings; 0 removed, 243 added (209 `PY3-STDLIB`, 34 `PY3-BUILTIN`), 311 changed message/severity (308 `PY3-STDLIB`, 3 `PY3-PARSE`) — full breakdown in Blockers, Resolved |
 | 2026-10-23 | a66f578 | py2scan | (item 2a, two new regression tests) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), 3.14.9 (Docker `py2scan-test314`) | `130 passed, 2 skipped` on 2.7.18; `125 passed, 7 skipped` on 3.14.7 and 3.14.9 |
 | 2026-10-23 | a66f578 | py2scan | (item 2a, two new regression tests, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker, ad hoc `flake8<4`), 3.14.7 (Homebrew venv), and 3.14.9 (Docker `py2scan-test314`, ad hoc `flake8`) | 0 violations, all three |
+| 2026-10-23 | n/a (AutoSteer CI notice, no code change yet) | py2scan | (AutoSteer CI finding, R1 on real stdlib) | AutoSteer CI run against the real stdlib tree, 3.6.15–3.15.1 | 3 real files (`json/__init__.py`, `lib2to3/fixes/fix_unicode.py`, `posixpath.py`) that real 3.6–3.15 cannot compile, with no blocker reported on the 2.7 scan for any of them — R1 violation |
+| 2026-10-23 | n/a (research, no code change) | py2scan | (root cause, `ur`-string and invalid `\u` escape) | `ast.parse`/`tokenize.tokenize` on real 2.7.18 and 3.14.7/3.14.9 for all 8 u/r prefix orderings, and for a bare string with `\uXXXX` vs. `b'\uXXXX'` vs. `r'\uXXXX'` vs. `u'\uXXXX'` | 2.7.18 accepts exactly `ur`/`Ur`/`uR`/`UR` (not `ru` etc); every Python 3.x rejects all 8, and 3.14.7's own `tokenize` module raises `TokenError` for it, not just a later `SyntaxError`; a bare string's invalid `\u` escape is inert on 2.7.18 but a `SyntaxError` on every Python 3.x; `b'...'` behaves identically on both (never flagged) |
+| 2026-10-23 | pending | py2scan | (`PY3-UR-STRING`/`PY3-UNICODE-ESCAPE` fix) | `scan_file` against the exact 3 real files AutoSteer named, inside `py2scan-test` (2.7.18) | `posixpath.py` → 1 `PY3-UR-STRING` blocker; `fix_unicode.py` → 4 `PY3-UR-STRING` blockers; `json/__init__.py` → 1 `PY3-UNICODE-ESCAPE` blocker — all 3 R1 violations closed |
+| 2026-10-23 | pending | py2scan | (`PY3-UR-STRING`/`PY3-UNICODE-ESCAPE` fix, full suite) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), 3.14.9 (Docker `py2scan-test314`) | `142 passed, 2 skipped` on 2.7.18; `135 passed, 9 skipped` on 3.14.7 and 3.14.9 |
+| 2026-10-23 | pending | py2scan | (`PY3-UR-STRING`/`PY3-UNICODE-ESCAPE` fix, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker, ad hoc `flake8<4`), 3.14.7 (Homebrew venv), and 3.14.9 (Docker `py2scan-test314`, ad hoc `flake8`) | 0 violations, all three |
 
 ## Decisions
 - 2026-10-22, owner: `.md`-commit exception for `MIGRATION.md` and

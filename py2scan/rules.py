@@ -8,6 +8,11 @@ from py2scan.findings import Finding
 
 _OLD_OCTAL = re.compile(r"^0[0-7]+$")
 
+_STRING_PREFIX = re.compile(r"^[a-zA-Z]*")
+_HEX4 = re.compile(r"^[0-9a-fA-F]{4}$")
+_HEX8 = re.compile(r"^[0-9a-fA-F]{8}$")
+_NAME_ESCAPE = re.compile(r"^\{[^}]+\}")
+
 _BRACKETS_OPEN = frozenset("([{")
 _BRACKETS_CLOSE = frozenset(")]}")
 
@@ -568,4 +573,82 @@ def check_except_comma(path, tokens):
                 continue
 
 
-TOKEN_RULES = [check_ne_op, check_octal, check_long_suffix, check_except_comma]
+def check_ur_string(path, tokens):
+    # Python 2.7 accepts a raw-unicode string prefix with u before r,
+    # case-insensitively: ur/Ur/uR/UR (confirmed empirically - ru/Ru/rU/RU
+    # is a SyntaxError even on 2.7). Python 3 has never accepted combining
+    # u and r in any order, even after 3.3 restored a no-op u prefix - a
+    # 2-vs-3 boundary issue like <> or the old octal literal, found via a
+    # real-stdlib parity scan (item 2a) surfacing posixpath.py and
+    # lib2to3/fixes/fix_unicode.py, both of which real Python 3 cannot
+    # compile and which no existing rule caught (R1).
+    for toknum, tokval, start, _end, _line in tokens:
+        if toknum == tokenize.STRING and tokval[:2].lower() == "ur":
+            yield Finding(
+                path, start[0], "PY3-UR-STRING", "blocker",
+                "%s string prefix; Python 3 never allows combining u "
+                "and r" % tokval[:2])
+
+
+def _string_prefix_and_body(tokval):
+    prefix = _STRING_PREFIX.match(tokval).group(0)
+    rest = tokval[len(prefix):]
+    quote = rest[:3] if rest[:3] in ("'''", '"""') else rest[:1]
+    return prefix, rest[len(quote):-len(quote)]
+
+
+def _has_invalid_unicode_escape(body):
+    i, n = 0, len(body)
+    while i < n:
+        if body[i] != "\\" or i + 1 >= n:
+            i += 1
+            continue
+        nxt = body[i + 1]
+        if nxt == "u":
+            if not _HEX4.match(body[i + 2:i + 6]):
+                return True
+            i += 6
+        elif nxt == "U":
+            if not _HEX8.match(body[i + 2:i + 10]):
+                return True
+            i += 10
+        elif nxt == "N":
+            m = _NAME_ESCAPE.match(body[i + 2:])
+            if not m:
+                return True
+            i += 2 + m.end()
+        else:
+            i += 2
+    return False
+
+
+def check_unicode_escape(path, tokens):
+    # A bare string literal (no u/r/b prefix) with a \u, \U or \N{...}
+    # escape that isn't valid (4 hex digits, 8 hex digits, or a non-empty
+    # {name} respectively) is inert text under Python 2.7 - a plain
+    # string there never processes those escapes at all - but a
+    # SyntaxError under Python 3, where every non-raw, non-bytes string
+    # is unicode and always processes them (confirmed empirically on
+    # both interpreters, both for a bare string and for b'...', which
+    # behaves identically on both sides and must not be flagged). Found
+    # via a real-stdlib parity scan (item 2a) surfacing json/__init__.py's
+    # docstring, which real Python 3 cannot compile and which no existing
+    # rule caught (R1). u- and r-prefixed strings are excluded: a raw
+    # string never processes escapes on either side, and a u-prefixed
+    # string already requires a valid escape under Python 2.7 too, so
+    # there is no 2-vs-3 difference to report.
+    for toknum, tokval, start, _end, _line in tokens:
+        if toknum != tokenize.STRING:
+            continue
+        prefix, body = _string_prefix_and_body(tokval)
+        if any(c in prefix.lower() for c in "rub"):
+            continue
+        if _has_invalid_unicode_escape(body):
+            yield Finding(
+                path, start[0], "PY3-UNICODE-ESCAPE", "blocker",
+                "string has a \\u/\\U/\\N escape that is inert text "
+                "under Python 2.7 but a SyntaxError under Python 3")
+
+
+TOKEN_RULES = [check_ne_op, check_octal, check_long_suffix, check_except_comma,
+               check_ur_string, check_unicode_escape]
