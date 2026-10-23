@@ -50,16 +50,37 @@ def test_versioned_stdlib_removal_scoped_to_judged_versions():
         shutil.rmtree(root)
 
 
+def _find_on_path(name):
+    # shutil.which() is Python 3.3+ only; this straddles 2.7 too.
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        candidate = os.path.join(directory, name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def _discover_python3():
+    # Under a Python 3 test run, sys.executable already IS that interpreter.
+    # Under a Python 2.7 test run, fall back to whatever python3 the host
+    # provides (the T12-fixed Dockerfile.test installs one alongside 2.7),
+    # so this test drives the real cross-version subprocess path on both
+    # sides of the straddle instead of skipping under 2.7.
+    if sys.version_info[0] >= 3:
+        return sys.executable
+    return _find_on_path("python3")
+
+
 def test_run_extra_backstop_detects_a_real_compile_failure(tmp_path):
-    if sys.version_info[0] < 3:
-        pytest.skip("the extra-interpreter driver needs a Python 3 interpreter")
+    python3 = _discover_python3()
+    if python3 is None:
+        pytest.skip("no python3 interpreter available to drive the backstop")
     bad = str(tmp_path / "bad.py")
     with open(bad, "wb") as f:
         f.write(b"def f(:\n    pass\n")
     good = str(tmp_path / "good.py")
     with open(good, "wb") as f:
         f.write(b"x = 1\n")
-    failed = _run_extra_backstop(sys.executable, [bad, good])
+    failed = _run_extra_backstop(python3, [bad, good])
     assert failed == set([bad])
 
 

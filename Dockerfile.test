@@ -1,4 +1,13 @@
 FROM python:2.7.18-slim
 WORKDIR /app
+# python3 lives alongside 2.7 here so tests/test_scanner.py can exercise
+# --py3-interpreter's cross-version subprocess path for real on this side
+# of the straddle too, not just skip it (AutoSteer T12).
+RUN printf 'deb [check-valid-until=no] http://archive.debian.org/debian buster main\n' \
+        > /etc/apt/sources.list \
+    && printf 'deb [check-valid-until=no] http://archive.debian.org/debian-security buster/updates main\n' \
+        >> /etc/apt/sources.list \
+    && apt-get update && apt-get install -y --no-install-recommends python3 \
+    && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt requirements-dev.txt constraints-build.txt ./
 RUN PIP_CONSTRAINT=constraints-build.txt pip install --no-cache-dir -r requirements-dev.txt
