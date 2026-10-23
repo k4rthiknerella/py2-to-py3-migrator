@@ -7,7 +7,7 @@ from py2scan.versions import ALL, VERSIONS, label
 class Finding(object):
     """One occurrence of a rule in one file."""
 
-    def __init__(self, file, line, rule, severity, message, col=0, source=None, versions=ALL):
+    def __init__(self, file, line, rule, severity, message, col=0, source=None, versions=ALL, syntax=frozenset()):
         self.file = file
         self.line = line
         self.rule = rule
@@ -16,6 +16,7 @@ class Finding(object):
         self.col = col  # orders findings that share a line and a rule
         self.source = source  # the decoded offending line, for the HTML report
         self.versions = versions  # the Python 3 versions it applies to (ruling R6)
+        self.syntax = syntax  # those of them that cannot compile the file because of it (ruling R1)
 
     def key(self):
         return (self.file, self.line, self.rule, self.col)
@@ -39,4 +40,5 @@ def labels(versions):
 
 def judge(findings, versions):
     """The findings that apply to any of versions, each narrowed to them."""
-    return [f.replace(versions=f.versions & versions) for f in findings if f.versions & versions]
+    return [f.replace(versions=f.versions & versions, syntax=f.syntax & versions) for f in findings
+            if f.versions & versions]

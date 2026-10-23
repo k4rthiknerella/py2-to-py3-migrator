@@ -73,9 +73,11 @@ class Tokenizer(object):
         self.start_lineno = 0
         self.start_col = 0
         self.tab_magic = False  # a comment changed the tab size
-        # (line, column with 8-column tabs, column with 1-column tabs) of each
-        # indentation the tokenizer measured: what Python 3 would compare.
+        # (line, column with 8-column tabs, column with 1-column tabs, column
+        # with this tokenizer's tabs) of each indentation the tokenizer
+        # measured: what Python 3 would compare, and what 2.7 did.
         self.indents = []
+        self.continuation = None  # offset of the last line-continuation backslash
 
     # tok_nextc and tok_backup
     def nextc(self):
@@ -156,7 +158,7 @@ class Tokenizer(object):
         blankline = c in ("#", "\n")
         if blankline or self.level:
             return blankline, None
-        self.indents.append((self.lineno, col8, altcol))
+        self.indents.append((self.lineno, col8, altcol, col))
         return False, self._new_indent(col, altcol)
 
     def _new_indent(self, col, altcol):
@@ -227,6 +229,7 @@ class Tokenizer(object):
             self.done = E_LINECONT
             self.cur = self.inp
             return False
+        self.continuation = self.cur - 2
         return True
 
     def _token_at(self, c, blankline):

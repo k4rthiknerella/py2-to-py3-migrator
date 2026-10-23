@@ -10,19 +10,22 @@ severity of its own.
 import re
 from collections import OrderedDict, namedtuple
 
+from py2scan import py3
 from py2scan.py27 import ast27, grammar, symbol
 from py2scan.versions import ALL
 
 BLOCKER = "blocker"
 WARNING = "warning"
+NONE = frozenset()
 
 Rule = namedtuple("Rule", "id severity title")
-Hit = namedtuple("Hit", "line col message versions severity")
+Hit = namedtuple("Hit", "line col message versions severity syntax")
 
 
-def hit(line, col, message, versions=ALL, severity=None):
-    """An occurrence that applies to versions only, or whose severity is not its rule's."""
-    return Hit(line, col, message, versions, severity)
+def hit(line, col, message, versions=ALL, severity=None, syntax=NONE):
+    """An occurrence that applies to versions only, has a severity of its own,
+    or stops compile() on the syntax versions (ruling R1)."""
+    return Hit(line, col, message, versions, severity, syntax)
 
 
 RULES = OrderedDict()
@@ -41,61 +44,81 @@ def rule(rule_id, title, severity=BLOCKER):
 RULES["PY3-PARSE"] = Rule("PY3-PARSE", BLOCKER, "does not parse under Python 2.7")
 
 
-class Module(object):
-    """A parsed module: its AST nodes, its CST tokens and its except clauses."""
+@rule("PY3-SYNTAX", "Python 3 cannot compile it")
+def check_syntax(m):
+    for found in py3.problems(m):
+        yield hit(found.line, found.col, found.message, found.versions, syntax=found.syntax)
 
-    def __init__(self, tree, cst):
+
+class Module(object):
+    """A parsed module: its source bytes, its parse (result: the CST, the declared
+    encoding, the parser's future flags and its tokenizer), its AST nodes, and
+    the CST's tokens in source order, each with its parent node."""
+
+    def __init__(self, tree, result, source=b""):
         self.tree = tree
+        self.result = result
+        self.source = source
         self.nodes = list(ast27.walk(tree))
-        self.tokens = []  # (type, string, line, col)
+        self.leaves = []
+        self.parent = {}  # id(CST node): its parent
         self.except_clauses = []
-        stack = [cst]
+        stack = [result.cst]
         while stack:  # not recursive: the CST nests about 15 levels per expression
             node = stack.pop()
             if node.children is None:
-                self.tokens.append((node.type, node.value, node.lineno, node.col))
-            else:
-                if node.type == symbol.except_clause:
-                    self.except_clauses.append(node)
-                stack.extend(node.children)
+                self.leaves.append(node)
+                continue
+            if node.type == symbol.except_clause:
+                self.except_clauses.append(node)
+            for child in node.children:
+                self.parent[id(child)] = node
+            stack.extend(reversed(node.children))
+        self.tokens = [(n.type, n.value, n.lineno, n.col) for n in self.leaves]  # (type, string, line, col)
+        self.cache = {}  # what detectors compute once per module
 
     def of(self, *kinds):
         return (node for node in self.nodes if isinstance(node, kinds))
 
 
 def check(module):
-    """(rule id, line, col, message, versions, severity) for every occurrence of every rule."""
+    """(rule id, line, col, message, versions, severity, syntax versions) for every
+    occurrence of every rule."""
     found = []
     for rule_id, check_rule in _CHECKS:
         for item in check_rule(module):
-            h = item if isinstance(item, Hit) else Hit(item[0], item[1], item[2], ALL, None)
-            found.append((rule_id, h.line, h.col, h.message, h.versions, h.severity or RULES[rule_id].severity))
+            h = item if isinstance(item, Hit) else Hit(item[0], item[1], item[2], ALL, None, NONE)
+            found.append((rule_id, h.line, h.col, h.message, h.versions, h.severity or RULES[rule_id].severity,
+                          h.syntax))
     return found
 
 
 @rule("PY3-PRINT", "print statement")
 def check_print(m):
     for node in m.of(ast27.Print):
-        yield node.lineno, node.col_offset, "print statement; Python 3 has only the print() function"
+        yield hit(node.lineno, node.col_offset, "print statement; Python 3 has only the print() function",
+                  syntax=py3.statement_syntax(m, node))
 
 
 @rule("PY3-EXEC-STMT", "exec statement")
 def check_exec(m):
     for node in m.of(ast27.Exec):
-        yield node.lineno, node.col_offset, "exec statement; Python 3 has only the exec() function"
+        yield hit(node.lineno, node.col_offset, "exec statement; Python 3 has only the exec() function",
+                  syntax=py3.statement_syntax(m, node))
 
 
 @rule("PY3-BACKTICK", "backtick repr")
 def check_backtick(m):
     for node in m.of(ast27.Repr):
-        yield node.lineno, node.col_offset, "backtick repr expression; Python 3 has only repr()"
+        yield hit(node.lineno, node.col_offset, "backtick repr expression; Python 3 has only repr()", syntax=ALL)
 
 
 @rule("PY3-NE-OP", "<> operator")
 def check_ne_op(m):
+    syntax = py3.ne_syntax(m)
     for kind, text, line, col in m.tokens:
         if kind == grammar.NOTEQUAL and text == "<>":
-            yield line, col, "<> operator; Python 3 has only !="
+            yield hit(line, col, "<> operator; Python 3 has only !=", syntax=syntax)
 
 
 @rule("PY3-EXCEPT-COMMA", "except X, e:")
@@ -105,14 +128,15 @@ def check_except_comma(m):
     for clause in m.except_clauses:
         if len(clause.children) > 2 and clause.children[2].type == grammar.COMMA:
             keyword = clause.children[0]
-            yield keyword.lineno, keyword.col, "except X, e: form; Python 3 needs except X as e:"
+            yield hit(keyword.lineno, keyword.col, "except X, e: form; Python 3 needs except X as e:",
+                      syntax=py3.EXCEPT_COMMA)
 
 
 @rule("PY3-RAISE-COMMA", "raise E, value")
 def check_raise_comma(m):
     for node in m.of(ast27.Raise):
         if node.inst is not None:
-            yield node.lineno, node.col_offset, "raise E, value form; Python 3 needs raise E(value)"
+            yield hit(node.lineno, node.col_offset, "raise E, value form; Python 3 needs raise E(value)", syntax=ALL)
 
 
 # 0 followed by octal digits, at least one of them non-zero: 00 is valid Python 3.
@@ -123,15 +147,15 @@ _OLD_OCTAL = re.compile(r"0[0-7]*[1-7][0-7]*[lL]?$")
 def check_octal(m):
     for kind, text, line, col in m.tokens:
         if kind == grammar.NUMBER and _OLD_OCTAL.match(text):
-            yield line, col, "old-style octal literal %s; Python 3 needs 0o%s" % (
-                text, text.rstrip("lL").lstrip("0"))
+            yield hit(line, col, "old-style octal literal %s; Python 3 needs 0o%s" % (
+                text, text.rstrip("lL").lstrip("0")), syntax=ALL)
 
 
 @rule("PY3-LONG-SUFFIX", "long integer suffix")
 def check_long_suffix(m):
     for kind, text, line, col in m.tokens:
         if kind == grammar.NUMBER and text[-1] in "lL":
-            yield line, col, "long literal %s; Python 3 ints take no L suffix" % text
+            yield hit(line, col, "long literal %s; Python 3 ints take no L suffix" % text, syntax=ALL)
 
 
 _DICT_METHODS = {

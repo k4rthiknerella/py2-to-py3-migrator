@@ -10,7 +10,7 @@ from concurrent.futures import ProcessPoolExecutor
 from py2scan.findings import Finding
 from py2scan.py27 import ast27
 from py2scan.py27.parser import Py27SyntaxError, parse_cst
-from py2scan.rules import BLOCKER, Module, check
+from py2scan.rules import BLOCKER, NONE, Module, check
 from py2scan.source import coding_cookie, line_of_offset, source_lines, utf8_text
 from py2scan.versions import ALL
 
@@ -120,13 +120,13 @@ def scan_source(path, source):
         tree = ast27.build(result)
     except Py27SyntaxError as e:
         line, reason = _parse_error(source, e)
-        found = [("PY3-PARSE", line, 0, "does not parse under Python 2.7: %s" % reason, ALL, BLOCKER)]
+        found = [("PY3-PARSE", line, 0, "does not parse under Python 2.7: %s" % reason, ALL, BLOCKER, NONE)]
     else:
-        found = check(Module(tree, result.cst))
+        found = check(Module(tree, result, source))
     lines = source_lines(source)
     findings = [Finding(path, lineno, rule_id, severity, message, col,
-                        lines[lineno - 1] if 0 < lineno <= len(lines) else None, versions)
-                for rule_id, lineno, col, message, versions, severity in found]
+                        lines[lineno - 1] if 0 < lineno <= len(lines) else None, versions, syntax)
+                for rule_id, lineno, col, message, versions, severity, syntax in found]
     findings.sort(key=Finding.key)  # stable, so ties keep the order the rule found them in
     return findings
 

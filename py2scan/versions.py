@@ -22,6 +22,16 @@ def since(version):
     return frozenset(v for v in VERSIONS if v >= version)
 
 
+def until(version):
+    """The judged versions up to and including version."""
+    return frozenset(v for v in VERSIONS if v <= version)
+
+
+def between(first, last):
+    """The judged versions from first to last, inclusive."""
+    return frozenset(v for v in VERSIONS if first <= v <= last)
+
+
 ALL = frozenset(VERSIONS)
 
 
