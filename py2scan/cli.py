@@ -63,7 +63,12 @@ def scan_cmd(path, fmt, config_path, jobs, html_path, py3_versions, extra_interp
             fh.write(render_html(path, result.files, findings, versions).encode("utf-8"))
 
     if fmt == "json":
-        click.echo(json.dumps(to_json(result, findings, versions)))
+        # sort_keys: a dict literal's key order is only guaranteed
+        # preserved on Python 3.7+; on 2.7 a plain dict's iteration order
+        # is hash-bucket layout, not source order, so the same literal in
+        # report.py/findings.py serializes with a different key order on
+        # each host without this (R2: byte-identical output).
+        click.echo(json.dumps(to_json(result, findings, versions), sort_keys=True))
     else:
         for f in findings:
             click.echo(u"%s:%d: %s %s" % (f.file, f.line, f.rule, f.message))

@@ -70,6 +70,22 @@ def test_format_json_output():
     assert "3.9" in payload["findings"][0]["versions"]
 
 
+def test_format_json_keys_are_sorted():
+    # R2 (byte-identical output): a dict literal's key order is only
+    # guaranteed preserved on Python 3.7+ - on 2.7 the same literal
+    # serializes with a host-dependent, hash-bucket key order instead of
+    # source order, so every object in the payload must be sorted for the
+    # bytes to match across interpreters.
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "a.py"), "wb") as f:
+            f.write(b"x = 1\n")
+        result = CliRunner().invoke(main, ["scan", root, "--format", "json"])
+    finally:
+        shutil.rmtree(root)
+    assert result.output == json.dumps(json.loads(result.output), sort_keys=True) + "\n"
+
+
 def test_unreadable_file_exits_2_and_is_listed():
     if os.getuid() == 0:
         pytest.skip("root bypasses the permission bits this test relies on")
