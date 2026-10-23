@@ -352,7 +352,7 @@ implementation choice, not something requiring a ruling): 3.14.9 (Docker
 forward, not a Decisions-section entry since it's a testing-practice
 choice, not an owner-approved exception.
 
-**Resolved, commit `pending`: security advisory scanning (item 4, R11
+**Resolved, commit `b58a732`: security advisory scanning (item 4, R11
 scope).** R11's scope: "environment" means what py2scan installs and runs
 with — the interpreter and the Python packages it depends on, both source
 and target side. Explicitly out of scope per R11: OS packages inside test
