@@ -13,8 +13,11 @@ makes sense if both sides keep running.
 `test` is set explicitly because the project's test command needs a Docker
 wrapper around pytest; no bare `tox`/`nox`/`pytest` invocation runs this
 project's tests standalone (PyYAML 5.4.1 needs a build constraint — see
-Dependencies). It is the *source*-side command; a target-side counterpart does
-not exist yet (see Blockers).
+Dependencies). It is still only the *source*-side command (the frontmatter
+holds one `test` string, and `assess`/`status` own it, not `fix`/`verify`/
+`flip`); the target-side counterpart used for `verify` this session is the
+same command with `Dockerfile.test314` in place of `Dockerfile.test` — see
+Runtime surfaces.
 
 `target` and `units` are not listed because they match detection: target is
 Python 3.14 (the newest Python in bugfix support for 6+ months as of
@@ -651,7 +654,8 @@ pins install and import cleanly on their respective interpreters.
 ## Runtime surfaces
 | File | Pins | Unit | Changes at flip |
 |---|---|---|---|
-| `Dockerfile.test` | `FROM python:2.7.18-slim` | py2scan | source-side test image; a target-side counterpart (e.g. `Dockerfile.test314`) does not exist yet — needed before `verify` can run target-side tests |
+| `Dockerfile.test` | `FROM python:2.7.18-slim` | py2scan | source-side test image |
+| `Dockerfile.test314` | `FROM python:3.14-slim` | py2scan | target-side test image, added this session (flip prep) — same `requirements.txt`/`requirements-dev.txt` as the source image, since both already carry `python_version` markers; resolves to 3.14.9 (matches CI), used for this session's `verify` pass instead of the ad hoc pip install used earlier |
 | `setup.py` | `python_requires="==2.7.*"` | py2scan | widens at flip, not before |
 | `CLAUDE.md` (project, not committed — see global `~/.claude/CLAUDE.md`) | "Runtime is Python 2.7.18 only" | py2scan | owner-authored prose; migration tooling does not rewrite it, owner updates it at flip |
 
@@ -713,6 +717,7 @@ any other process (no pickle, cache, queue, or database).
 | 2026-10-22 | cc12b90 | py2scan | (bad-byte filename fix) | same fixture, all 3 formats, after adding `encoding.py:safe_text` | 0 crashes on either interpreter; output identical across both (`bad_�_name.py`) |
 | 2026-10-22 | cc12b90 | py2scan | (bad-byte filename fix, full suite) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), 3.14.9 (Docker `python:3.14-slim`) | `117 passed, 2 skipped` on 2.7.18; `112 passed, 7 skipped` on 3.14.7 (2 new tests skip - Mac host filesystem rejects the fixture); `112 passed, 7 skipped` on 3.14.9 (2 new tests pass - Linux) |
 | 2026-10-22 | cc12b90 | py2scan | (bad-byte filename fix, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker `python:2.7.18-slim`, ad hoc `flake8<4`) and 3.14.7 (Homebrew venv) | 0 violations of any kind, both interpreters |
+| 2026-10-22 | 0f40071 | py2scan | 2.7.18→3.14 | L3 (flagged missing by AutoSteer CI after the fact; added here, not re-dated) | aggregation, not a single command: Units table blocker count (0 auto / 0 manual, confirmed by this session's R6–R10/R11/sweep closures above), every `requirements.txt` pin re-checked against the Dependencies table's own "Yes, both (verified)" rows (actual installs/imports, not a resolver dry-run), Runtime surfaces table's existing plan, no stored data for this CLI tool | all four L3 preconditions hold; no single command produces this level, which is why the row was easy to miss — recorded explicitly now so the next level transition doesn't repeat the gap |
 | 2026-10-22 | 0f40071 | py2scan | 2.7.18→3.14 | L4 (`verify`, deliberate pass, not incidental) | `docker build -q -f Dockerfile.test -t py2scan-test . && docker run --rm -v "$PWD":/app -w /app py2scan-test python -m pytest -q -p no:cacheprovider tests` | `117 passed, 2 skipped` |
 | 2026-10-22 | 0f40071 | py2scan | 2.7.18→3.14 | L4 (`verify`) | `python3.14 -m pytest -q -p no:cacheprovider tests` (3.14.7, Homebrew venv) | `112 passed, 7 skipped` |
 | 2026-10-22 | 0f40071 | py2scan | 2.7.18→3.14 | L4 (`verify`) | same command inside `python:3.14-slim` (3.14.9, matching CI) | `112 passed, 7 skipped` |
