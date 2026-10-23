@@ -12,6 +12,7 @@ than trusting one fixed shape, since tokenize's own lexing of a couple of
 these constructs is host-dependent -- see rules/token_rules.py.
 """
 import io
+import re
 import sys
 import tokenize
 
@@ -20,6 +21,22 @@ from parso.parser import ParserSyntaxError
 
 _GRAMMAR = parso.load_grammar(version="2.7")
 _ENCODING_TOKEN = getattr(tokenize, "ENCODING", None)
+_UR_PREFIX_RE = re.compile(r'[uU][rR](?=[\'"])')
+_UR_PREFIX_RE_BYTES = re.compile(br'[uU][rR](?=[\'"])')
+
+
+def _blank_ur_prefixes(source):
+    """native tokenize raises TokenError the moment it reaches a ur"..."
+    literal (a Python-2-only raw-unicode prefix; see check_ur_string),
+    silently losing every token-based finding for the rest of the file.
+    Blank the two prefix characters to same-width spaces before tokenize
+    ever sees them: byte count and every other token's position are
+    unchanged, and no token rule reads a STRING token's own text, so the
+    substitution is invisible to all of them. The same style of fix as
+    the <> substitution below, one token-stream step earlier."""
+    if isinstance(source, bytes):
+        return _UR_PREFIX_RE_BYTES.sub(b"  ", source)
+    return _UR_PREFIX_RE.sub(u"  ", source)
 
 
 class ParseFailure(object):
@@ -29,11 +46,28 @@ class ParseFailure(object):
 
 
 def _tokenize(source):
+    """Some Python-2-only lexical constructs (e.g. a ur"..." raw-unicode
+    literal) make native tokenize raise partway through a file on a
+    Python 3 host, even though the file tokenizes fine on 2.7. tokenize
+    is a generator that yields progressively, so collect what it already
+    produced before the raise instead of discarding the whole file's
+    token-based findings for one construct elsewhere in it -- a defensive
+    fallback for whatever specific construct trips it next, on top of
+    (not instead of) fixing each one its own rule once found, the way
+    check_ur_string does for this one."""
+    tokenize_source = _blank_ur_prefixes(source)
     if sys.version_info[0] >= 3:
-        raw = tokenize.tokenize(io.BytesIO(source).readline)
+        raw = tokenize.tokenize(io.BytesIO(tokenize_source).readline)
     else:
-        raw = tokenize.generate_tokens(io.BytesIO(source).readline)
-    return [t for t in raw if t[0] != _ENCODING_TOKEN]
+        raw = tokenize.generate_tokens(io.BytesIO(tokenize_source).readline)
+    tokens = []
+    try:
+        for t in raw:
+            if t[0] != _ENCODING_TOKEN:
+                tokens.append(t)
+    except Exception:
+        pass
+    return tokens
 
 
 def native_compiles(path, source):

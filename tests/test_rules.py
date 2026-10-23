@@ -14,6 +14,7 @@ from py2scan.rules.ast_rules import (
     check_raise_comma,
     check_stdlib,
     check_tuple_param,
+    check_ur_string,
 )
 from py2scan.rules.token_rules import (
     check_division,
@@ -403,3 +404,44 @@ def test_none_is_not_flagged_by_this_rule():
     # None is already a 2.7-side SyntaxError to bind, so it never reaches
     # parso in the first place as a binding target; nothing to flag here.
     assert rules(check_keyword_binding, "x = None\n") == []
+
+
+def test_ur_string_double_quote_is_found():
+    assert rules(check_ur_string, 'x = ur"foo"\n') == [(1, "PY3-UR-STRING")]
+
+
+def test_ur_string_single_quote_is_found():
+    assert rules(check_ur_string, "x = ur'foo'\n") == [(1, "PY3-UR-STRING")]
+
+
+def test_ur_string_case_variants_are_found():
+    assert rules(check_ur_string, 'a = uR"x"\nb = Ur"y"\nc = UR"z"\n') == [
+        (1, "PY3-UR-STRING"), (2, "PY3-UR-STRING"), (3, "PY3-UR-STRING"),
+    ]
+
+
+def test_plain_raw_string_is_not_ur():
+    assert rules(check_ur_string, 'x = r"foo"\n') == []
+
+
+def test_plain_unicode_string_is_not_ur():
+    assert rules(check_ur_string, 'x = u"foo"\n') == []
+
+
+def test_byte_string_is_not_ur():
+    assert rules(check_ur_string, 'x = b"foo"\n') == []
+
+
+def test_ur_string_elsewhere_does_not_blind_token_rules_to_an_earlier_except_comma():
+    # Regression test for parsing._tokenize: native tokenize used to raise
+    # TokenError the moment it reached a ur"..." literal, silently losing
+    # every token-based finding for the rest of the file on a Python 3
+    # host. check_except_comma reads the token stream, so a real except
+    # comma earlier in the same file must still be caught.
+    source = "try:\n    pass\nexcept Exception, e:\n    pass\nx = ur'z'\n"
+    assert token_rules(check_except_comma, source) == [(3, "PY3-EXCEPT-COMMA")]
+
+
+def test_ur_string_elsewhere_does_not_blind_token_rules_to_a_later_except_comma():
+    source = "x = ur'z'\ntry:\n    pass\nexcept Exception, e:\n    pass\n"
+    assert token_rules(check_except_comma, source) == [(4, "PY3-EXCEPT-COMMA")]

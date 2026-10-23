@@ -10,7 +10,11 @@ migration strategy notes in MIGRATION.md for why.
 Written to run on Python 2.7 or Python 3.x: no f-strings, no `yield from`,
 no walrus, nothing newer than 2.7 syntax.
 """
+import re
+
 from py2scan.findings import Finding
+
+_UR_STRING_RE = re.compile(r'^[uU][rR][\'"]')
 
 
 def _walk(node):
@@ -123,6 +127,26 @@ def check_tuple_param(path, tree, tokens, versions):
     for node in _nodes(tree, "fpdef"):
         yield Finding(path, node.start_pos[0], "PY3-TUPLE-PARAM", "blocker",
                       "tuple parameter unpacking; not supported in Python 3", versions)
+
+
+def check_ur_string(path, tree, tokens, versions):
+    """ur"..."/uR/Ur/UR: a raw unicode literal. Valid 2.7 syntax; PEP 414
+    restored the bare u"..." prefix in Python 3.3+ but never ur"...", so
+    this is a SyntaxError on every judged version (3.6 through 3.15,
+    confirmed directly against each one's real interpreter: "invalid
+    syntax" on the older ones, "'u' and 'r' prefixes are incompatible" on
+    the newer ones - same break, worded differently).
+
+    This must read parso's tree, not the native token stream: on a
+    Python 3 host, tokenize.tokenize() raises TokenError the moment it
+    reaches a ur"..." literal, which silently empties the token list for
+    every token-based rule for the rest of the file (see
+    py2scan/parsing.py's _tokenize) - parso's grammar has no such gap."""
+    for node in _nodes(tree, "string"):
+        if _UR_STRING_RE.match(node.value):
+            yield Finding(path, node.start_pos[0], "PY3-UR-STRING", "blocker",
+                          "%s; the ur\"...\" raw-unicode prefix does not exist in "
+                          "Python 3" % node.value, versions)
 
 
 _RESERVED_SINCE_37 = frozenset(["async", "await"])
@@ -601,4 +625,5 @@ def check_keyword_binding(path, tree, tokens, versions):
 
 AST_RULES = [check_print, check_exec, check_backtick, check_raise_comma,
              check_dict_iter, check_builtin, check_stdlib, check_metaclass,
-             check_tuple_param, check_async_reserved, check_keyword_binding]
+             check_tuple_param, check_async_reserved, check_keyword_binding,
+             check_ur_string]
