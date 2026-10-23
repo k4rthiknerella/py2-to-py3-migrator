@@ -134,33 +134,178 @@ _BINDING_CONTEXTS = (ast.Store, ast.Param, ast.Del)
 # separate, version-guarded branch.
 _ARG_TYPE = getattr(ast, "arg", None)
 
+_FUNC_DEF_TYPES = tuple(t for t in (
+    ast.FunctionDef, getattr(ast, "AsyncFunctionDef", None),
+) if t is not None)
+
+_CLASS_OR_FUNC_TYPES = _FUNC_DEF_TYPES + (ast.ClassDef,)
+
+
+def _single_param_name(value):
+    """The bound name of one arguments-node slot (an entry in .args or
+    .kwonlyargs, or the .vararg/.kwarg value), or None if that slot is
+    absent. Covers 2.7's Name(ctx=Param)/string vararg-kwarg and 3.x's
+    ast.arg nodes."""
+    if value is None:
+        return None
+    if _ARG_TYPE is not None and isinstance(value, _ARG_TYPE):
+        return value.arg
+    if isinstance(value, ast.Name):
+        return value.id
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def _param_names(arguments_node):
+    """Every name an ast.arguments node binds as a parameter. Doesn't
+    handle 2.7's tuple-parameter unpacking (def f((a, b)): ...) - rare,
+    Python-2-only syntax; a known, minor gap, not R3's concern."""
+    names = set()
+    for arg in list(getattr(arguments_node, "args", None) or []):
+        name = _single_param_name(arg)
+        if name:
+            names.add(name)
+    for arg in list(getattr(arguments_node, "kwonlyargs", None) or []):
+        name = _single_param_name(arg)
+        if name:
+            names.add(name)
+    for attr in ("vararg", "kwarg"):
+        name = _single_param_name(getattr(arguments_node, attr, None))
+        if name:
+            names.add(name)
+    return names
+
+
+def _record_direct_binding(node, bound):
+    """If this node directly binds a name - not a function/class/lambda
+    or a global statement, which the caller handles itself - add it to
+    bound and return True. Returns False (meaning "recurse into this
+    node's children instead") for anything else."""
+    if isinstance(node, ast.Name) and isinstance(node.ctx, _BINDING_CONTEXTS):
+        bound.add(node.id)
+        return True
+    if _ARG_TYPE is not None and isinstance(node, _ARG_TYPE):
+        bound.add(node.arg)
+        return True
+    if isinstance(node, ast.Import):
+        for alias in node.names:
+            bound.add((alias.asname or alias.name).split(".")[0])
+        return True
+    if isinstance(node, ast.ImportFrom):
+        for alias in node.names:
+            bound.add(alias.asname or alias.name)
+        return True
+    return False
+
+
+def _own_bindings_and_globals(stmts):
+    """(bound, declared_globals): names bound directly by these statements,
+    and names named in a bare `global` statement directly within them -
+    not crossing into a nested function, class, or lambda body (R3: a
+    binding, including del, binds "in that scope")."""
+    bound = set()
+    declared_globals = set()
+    stack = list(stmts)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, _CLASS_OR_FUNC_TYPES):
+            bound.add(node.name)
+        elif isinstance(node, ast.Lambda):
+            pass
+        elif isinstance(node, ast.Global):
+            declared_globals.update(node.names)
+        elif not _record_direct_binding(node, bound):
+            stack.extend(ast.iter_child_nodes(node))
+    return bound, declared_globals
+
 
 def _module_bound_names(tree):
-    bound = set()
+    """R3: names bound at module level - either directly, or inside a
+    function that both declares the name global and binds it there. A
+    bare `global` statement with no matching binding in that same
+    function binds nothing by itself."""
+    module_bound, _ = _own_bindings_and_globals(tree.body)
     for node in ast.walk(tree):
-        if (isinstance(node, ast.Name)
-                and isinstance(node.ctx, _BINDING_CONTEXTS)):
-            bound.add(node.id)
-        elif isinstance(node, (ast.FunctionDef, ast.ClassDef)):
-            bound.add(node.name)
-        elif _ARG_TYPE is not None and isinstance(node, _ARG_TYPE):
-            bound.add(node.arg)
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                bound.add((alias.asname or alias.name).split(".")[0])
-        elif isinstance(node, ast.ImportFrom):
-            for alias in node.names:
-                bound.add(alias.asname or alias.name)
-    return bound
+        if isinstance(node, _FUNC_DEF_TYPES):
+            local_bound, declared_globals = \
+                _own_bindings_and_globals(node.body)
+            module_bound.update(declared_globals & local_bound)
+    return module_bound
+
+
+def _is_shadowed(name, scope_chain, module_bound):
+    for shadow in scope_chain:
+        if name in shadow:
+            return True
+    return name in module_bound
+
+
+def _builtin_use_in_name(node, scope_chain, module_bound, path):
+    if (isinstance(node.ctx, ast.Load) and node.id in BUILTIN_NAMES
+            and not _is_shadowed(node.id, scope_chain, module_bound)):
+        yield Finding(
+            path, node.lineno, "PY3-BUILTIN", "blocker",
+            "%s; removed or changed on Python 3" % node.id)
+
+
+def _builtin_use_in_function(node, scope_chain, module_bound, path):
+    local_bound, declared_globals = _own_bindings_and_globals(node.body)
+    shadow = (local_bound - declared_globals) | _param_names(node.args)
+    new_chain = (shadow,) + scope_chain
+    for child in ast.iter_child_nodes(node):
+        for finding in _builtin_use_walk(child, new_chain, module_bound, path):
+            yield finding
+
+
+def _builtin_use_in_lambda(node, scope_chain, module_bound, path):
+    new_chain = (_param_names(node.args),) + scope_chain
+    for finding in _builtin_use_walk(node.body, new_chain, module_bound, path):
+        yield finding
+
+
+def _builtin_use_walk(node, scope_chain, module_bound, path):
+    args = (scope_chain, module_bound, path)
+    if isinstance(node, ast.Name):
+        for finding in _builtin_use_in_name(node, *args):
+            yield finding
+        return
+    if isinstance(node, _FUNC_DEF_TYPES):
+        for finding in _builtin_use_in_function(node, *args):
+            yield finding
+        return
+    if isinstance(node, ast.Lambda):
+        for finding in _builtin_use_in_lambda(node, *args):
+            yield finding
+        return
+    for child in ast.iter_child_nodes(node):
+        for finding in _builtin_use_walk(child, *args):
+            yield finding
 
 
 def check_builtin_use(path, tree):
-    bound = _module_bound_names(tree)
-    for node in _nodes(tree, ast.Name):
-        if (isinstance(node.ctx, ast.Load) and node.id in BUILTIN_NAMES
-                and node.id not in bound):
-            yield Finding(path, node.lineno, "PY3-BUILTIN", "blocker",
-                          "%s; removed or changed on Python 3" % node.id)
+    """R3: PY3-BUILTIN scoping is Python 2.7's own compiler scoping - a
+    builtin-name reference is shadowed only by a binding Python's real
+    name resolution would actually reach: this function's own locals
+    (including its parameters), an enclosing function's locals via
+    closure (unless this function declares the name global, which skips
+    straight to module scope), or a module-level binding. A class body's
+    own bindings are not visible to its methods via this resolution, same
+    as real Python - only a function creates a scope nested methods see
+    through.
+
+    Known gap: a parameter default value or a decorator is real Python's
+    enclosing scope, not the function's own - this walk uses the new,
+    inner scope for both (via the generic ast.iter_child_nodes descent
+    in _builtin_use_in_function), so a builtin name shadowed only by a
+    same-named parameter could be wrongly treated as shadowed in its own
+    default value too. Rare enough (a builtin name reused as both a
+    parameter and, in the same signature, a default) that R3 doesn't call
+    it out; not fixed here to avoid losing parameter-annotation coverage
+    for little gain."""
+    module_bound = _module_bound_names(tree)
+    for finding in _builtin_use_walk(tree, (), module_bound, path):
+        yield finding
 
 
 # Python 2.7's ast has separate TryExcept/TryFinally nodes; Python 3 unifies

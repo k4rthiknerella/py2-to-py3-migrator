@@ -232,6 +232,53 @@ def test_unrelated_builtin_is_not_found():
     assert rules(check_builtin_use, "x = len([1, 2])\n") == []
 
 
+def test_builtin_use_in_one_function_does_not_leak_to_another():
+    # R3: scoping is Python's real compiler scoping, not a flat file-wide
+    # set - f's purely local `unicode` must not shadow g's genuine builtin
+    # use.
+    src = ("def f():\n    unicode = 5\n    return unicode\n\n"
+           "def g():\n    return unicode('hi')\n")
+    assert rules(check_builtin_use, src) == [(6, "PY3-BUILTIN")]
+
+
+def test_module_level_del_shadows_everywhere():
+    src = "del long\nx = long\n"
+    assert rules(check_builtin_use, src) == []
+
+
+def test_del_inside_one_function_does_not_leak_to_another():
+    src = "def f():\n    del long\n\ndef g():\n    return long\n"
+    assert rules(check_builtin_use, src) == [(5, "PY3-BUILTIN")]
+
+
+def test_bare_global_statement_alone_does_not_shadow():
+    # R3: a bare `global` with no matching binding in that same function
+    # binds nothing by itself.
+    src = "def f():\n    global long\n    return long\n"
+    assert rules(check_builtin_use, src) == [(3, "PY3-BUILTIN")]
+
+
+def test_global_declared_and_bound_shadows_module_wide():
+    src = ("def f():\n    global long\n    long = 5\n\n"
+           "def g():\n    return long\n")
+    assert rules(check_builtin_use, src) == []
+
+
+def test_nested_function_sees_enclosing_functions_local_via_closure():
+    src = ("def outer():\n    unicode = 5\n"
+           "    def inner():\n        return unicode('x')\n"
+           "    return inner\n")
+    assert rules(check_builtin_use, src) == []
+
+
+def test_class_body_binding_does_not_shadow_builtin_in_its_methods():
+    # R3: only a function creates a scope nested methods see through - a
+    # class body's own binding isn't visible to its methods this way.
+    src = ("class C(object):\n    long = 5\n"
+           "    def m(self):\n        return long\n")
+    assert rules(check_builtin_use, src) == [(4, "PY3-BUILTIN")]
+
+
 def test_stdlib_import_is_found():
     assert rules(check_stdlib_import, "import urllib2\n") == \
         [(1, "PY3-STDLIB")]

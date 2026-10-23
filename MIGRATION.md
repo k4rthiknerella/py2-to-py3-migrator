@@ -51,7 +51,7 @@ derivation recorded. Not started; folded into the same R6/R7/R8 matrix work.
 ## Units
 | Unit | Owner | Runtime today | Effective target | Step | Level | Blockers (auto / manual) | Size | Next |
 |---|---|---|---|---|---|---|---|---|
-| py2scan | Karthik Nerella | 2.7.18 | 3.14 | 2.7.18 → 3.14 | L2 | 0 auto / 5 manual (R3, R5, R6-R10 matrix, security scan, full What's New sweep) | L | `fix py2scan` |
+| py2scan | Karthik Nerella | 2.7.18 | 3.14 | 2.7.18 → 3.14 | L2 | 0 auto / 4 manual (R5, R6-R10 matrix, security scan, full What's New sweep) | L | `fix py2scan` |
 
 L2 is proved by `.py-migrate/compile_check.py`, committed, run on both sides —
 see Evidence. No consumers import py2scan as a library (it is a CLI-only
@@ -133,10 +133,44 @@ Waves: none — one unit, no import graph.
   interpreters (2.7.18 exercises `TryExcept`/`TryFinally`; 3.14.7 exercises
   the unified `Try`). Count verified by `grep -c` against the file, not
   recalled.
+- R3: `check_builtin_use` replaced with a real scope-chain walk, not the
+  previous flat whole-file set, after discovering that the flat approach
+  has a genuine bug the existing test suite didn't catch: a purely local
+  variable in one function (e.g. `def f(): unicode = 5`) was incorrectly
+  shadowing an unrelated builtin reference in a *different*, unconnected
+  function. Fixed by tracking a real scope chain (module → enclosing
+  functions, innermost first) during a single recursive descent over the
+  tree: `_own_bindings_and_globals` computes a scope's own direct bindings
+  (R3: `del` binds "in that scope", same as any other binding) and any
+  bare `global` names declared in it; `_module_bound_names` adds a name to
+  module scope only where a function both declares it global AND binds it
+  there (R3: a bare `global` alone binds nothing); `check_builtin_use`
+  walks the tree carrying a scope-chain of shadow sets, resolving each
+  builtin-candidate `Load` through enclosing function scopes via closure
+  (skipping a scope entirely if it declares the name global) before
+  falling through to module scope. A class body's own bindings are
+  deliberately excluded from the scope chain its methods see (matching
+  real Python: methods don't see class-body names without `self.`/the
+  class name). 8 new tests in `test_rules.py` covering: no cross-function
+  leakage, module- and function-scoped `del`, bare `global` alone (doesn't
+  shadow) vs. `global`-plus-binding (does, module-wide), closure
+  resolution into an enclosing function's local, and class-body
+  non-leakage into a method. The 4 pre-existing `check_builtin_use` tests
+  (including the parameter-shadowing one, which is what originally proved
+  a flat set alone can't be correct — a parameter must shadow within its
+  own function without leaking elsewhere) still pass unmodified.
+
+  Known, documented gap (see the docstring on `check_builtin_use`): a
+  parameter default value or decorator is evaluated in the *enclosing*
+  scope in real Python, but this walk uses the function's own new scope
+  for both, so a builtin name reused as both a parameter and, in the same
+  signature, a default, could be wrongly treated as shadowed in its own
+  default. R3's text doesn't call this out, and fixing it would cost
+  parameter-annotation coverage for a scenario rare enough not to write a
+  test for. Also doesn't handle 2.7's tuple-parameter unpacking
+  (`def f((a, b)): ...`) — rare, Python-2-only syntax.
 
 **Still open:**
-- R3 (PY3-BUILTIN scoping per Python 2.7's real compiler semantics,
-  including `del` and bare `global`) — not started.
 - R5 (exit code 2 and incomplete-report marking for unreadable entries) —
   not started.
 - R6/R7/R8/R9/R10 (multi-version readiness matrix, 3.6–3.15, final-release
@@ -274,13 +308,23 @@ any other process (no pickle, cache, queue, or database).
   recorded in full in session history; the ones affecting this document are
   cited inline above (R1 on the compile-guarantee vs. byte-identical JSON,
   R6 on multi-version readiness judging). R2 (ImportError-guarded
-  PY3-STDLIB) is implemented — see Blockers, Resolved. R3 (PY3-BUILTIN
-  scoping), R4 (deployment scope), R5 (exit code 2 / unreadable entries)
-  remain rules-engine changes for `fix`, not yet implemented — listed here
-  so `fix` starts from this list, not from memory.
+  PY3-STDLIB) and R3 (PY3-BUILTIN scoping) are implemented — see Blockers,
+  Resolved. R4 (deployment scope) is superseded by R9 below. R5 (exit code
+  2 / unreadable entries) remains a rules-engine change for `fix`, not yet
+  implemented.
 - 2026-10-22, architect (relaying owner decisions), spec rulings R7–R10:
   recorded in full in session history; cited inline above where they refine
   R1/R6/R8 (R9's "no network, no required extra interpreter at scan time"
   constraint on the still-unstarted R6/R7/R8 matrix work; R10's PY3-BUILTIN
   scope expansion, parallel to R8's PY3-STDLIB expansion). None of R7–R10
   are implemented yet.
+- 2026-10-22, architect (relaying owner decisions), spec ruling R11 (scope
+  of item 4, security advisory scanning, not yet started): "environment"
+  means what py2scan installs and runs with — the interpreter and the
+  Python packages, on both the source and target side. Explicitly out of
+  scope: OS packages inside test images, and the judged-version
+  interpreters used only as R9 test equipment. Interpreter advisories
+  count, with the query method and its blind spots recorded. Any "accept
+  with an expiry date" proposal is pending owner acceptance until the
+  owner actually accepts it — record it as pending, not as a Decision
+  entry, until that happens.
