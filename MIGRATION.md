@@ -776,7 +776,7 @@ Inputs, each verified against both real interpreters (2.7.18, 3.14.7) via
   Python 3's grammar rejects" framing in the prior version of this entry
   was also wrong for this specific rule, for the same reason.
 
-**Resolved, commit `pending`: item 2a, real-stdlib parity.** "Findings
+**Resolved, commit `a66f578`: item 2a, real-stdlib parity.** "Findings
 after migration match findings before it except for changes the spec
 items require, each covered by a test." Ran the pre-migration commit
 (`0e39731`, the last commit before `py-migrate assess` started — see
@@ -1016,8 +1016,8 @@ any other process (no pickle, cache, queue, or database).
 | 2026-10-22 | fe764df | py2scan | (item 3 edge-case tests, item 3 schema version, item 2c, item 5) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), 3.14.9 (Docker `py2scan-test314`) | `128 passed, 2 skipped` on 2.7.18; `123 passed, 7 skipped` on 3.14.7 and 3.14.9 |
 | 2026-10-22 | fe764df | py2scan | (item 3 edge-case tests, item 3 schema version, item 2c, item 5, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker, ad hoc `flake8<4`), 3.14.7 (Homebrew venv), and 3.14.9 (Docker `py2scan-test314`, ad hoc `flake8`) | first pass: 1 violation, 2.7.18 only (`F812 list comprehension redefines 'f'` in the new item-5 test — a real Python-2-only scoping difference, not a false positive); 0 violations on 3.14.7/3.14.9; after renaming the comprehension variable, 0 violations on all three |
 | 2026-10-23 | n/a (research, no code change) | py2scan | (item 2a, real stdlib parity, root cause) | `git worktree add --detach .py-migrate/out/before_worktree 0e39731`; two driver scripts calling `scanner.scan()` directly against `/usr/local/lib/python2.7` inside `py2scan-test` (2.7.18), once per commit (`0e39731`, `HEAD`); a Python diff script keyed on `(file, line, rule)` | old: 1333 files, 3704 findings; new: 1333 files, 3950 findings; 0 removed, 243 added (209 `PY3-STDLIB`, 34 `PY3-BUILTIN`), 311 changed message/severity (308 `PY3-STDLIB`, 3 `PY3-PARSE`) — full breakdown in Blockers, Resolved |
-| 2026-10-23 | pending | py2scan | (item 2a, two new regression tests) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), 3.14.9 (Docker `py2scan-test314`) | `130 passed, 2 skipped` on 2.7.18; `125 passed, 7 skipped` on 3.14.7 and 3.14.9 |
-| 2026-10-23 | pending | py2scan | (item 2a, two new regression tests, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker, ad hoc `flake8<4`), 3.14.7 (Homebrew venv), and 3.14.9 (Docker `py2scan-test314`, ad hoc `flake8`) | 0 violations, all three |
+| 2026-10-23 | a66f578 | py2scan | (item 2a, two new regression tests) | full suite on 2.7.18 (Docker `py2scan-test`), 3.14.7 (Homebrew venv), 3.14.9 (Docker `py2scan-test314`) | `130 passed, 2 skipped` on 2.7.18; `125 passed, 7 skipped` on 3.14.7 and 3.14.9 |
+| 2026-10-23 | a66f578 | py2scan | (item 2a, two new regression tests, flake8) | `flake8 --max-complexity 10 py2scan tests` on 2.7.18 (Docker, ad hoc `flake8<4`), 3.14.7 (Homebrew venv), and 3.14.9 (Docker `py2scan-test314`, ad hoc `flake8`) | 0 violations, all three |
 
 ## Decisions
 - 2026-10-22, owner: `.md`-commit exception for `MIGRATION.md` and
