@@ -105,17 +105,30 @@ def check_dict_iter(path, tree, tokens, versions):
                                   "%s(); not available in Python 3" % children[1].value, versions)
 
 
+def _top_level_simple_stmts(suite):
+    """The simple_stmt nodes making up suite's top-level statements,
+    whether suite is a multi-line "suite" wrapper (one simple_stmt per
+    line) or - for a one-line body like "class C: __metaclass__ = x" -
+    the lone simple_stmt parso puts directly in the suite's position,
+    with no wrapper at all (same shape gap as _enclosing_loop_body)."""
+    if suite.type == "simple_stmt":
+        yield suite
+        return
+    for child in getattr(suite, "children", ()):
+        if child.type == "simple_stmt":
+            yield child
+
+
 def check_metaclass(path, tree, tokens, versions):
     for cls in _nodes(tree, "classdef"):
         suite = cls.children[-1]
-        for stmt in getattr(suite, "children", ()):
-            if stmt.type == "simple_stmt":
-                expr = stmt.children[0]
-                if (expr.type == "expr_stmt" and expr.children[0].type == "name"
-                        and expr.children[0].value == "__metaclass__"):
-                    yield Finding(path, stmt.start_pos[0], "PY3-METACLASS", "warning",
-                                  "__metaclass__ assignment; Python 3 uses the metaclass= keyword",
-                                  versions)
+        for stmt in _top_level_simple_stmts(suite):
+            expr = stmt.children[0]
+            if (expr.type == "expr_stmt" and expr.children[0].type == "name"
+                    and expr.children[0].value == "__metaclass__"):
+                yield Finding(path, stmt.start_pos[0], "PY3-METACLASS", "warning",
+                              "__metaclass__ assignment; Python 3 uses the metaclass= keyword",
+                              versions)
 
 
 def check_tuple_param(path, tree, tokens, versions):
@@ -196,13 +209,20 @@ def check_bad_unicode_escape(path, tree, tokens, versions):
 
 def _enclosing_loop_body(node):
     """Walk up from node; return the nearest for_stmt/while_stmt whose
-    own body suite (not an else-suite) contains node, without crossing
-    a funcdef boundary - None if there is none. A for/while's children
-    include a trailing (else, :, suite) when present; the loop's own
-    body is always its *first* suite child, so climbing through the
-    else-suite instead must not count as finding an enclosing loop
-    (confirmed on real 2.7.18: `for x in y: pass\\nelse:\\n    break` is
-    a SyntaxError, same as `break` with no loop at all)."""
+    own body (not an else-suite) contains node, without crossing a
+    funcdef boundary - None if there is none. A for/while's children
+    include a trailing (else, :, body) when present; the loop's own
+    body is always whatever comes right after its *first* ":", so
+    climbing through the else half instead must not count as finding
+    an enclosing loop (confirmed on real 2.7.18: `for x in y:
+    pass\\nelse:\\n    break` is a SyntaxError, same as `break` with no
+    loop at all). The body is not always a "suite" node specifically -
+    a one-line body (`while True: break`) has no suite wrapper at all,
+    parso puts the simple_stmt directly in its place - searching by
+    position relative to the first ":" instead of by node type covers
+    both shapes, and a for_stmt/while_stmt that made it past parso's
+    grammar (error_recovery=False) is guaranteed to have at least
+    one ":", unlike a "suite" child, which is not."""
     current = node
     parent = node.parent
     while parent is not None:
@@ -210,8 +230,9 @@ def _enclosing_loop_body(node):
             return None
         if parent.type in ("for_stmt", "while_stmt"):
             children = parent.children
-            body_idx = next(i for i, c in enumerate(children) if c.type == "suite")
-            if children.index(current) == body_idx:
+            colon_idx = next(i for i, c in enumerate(children)
+                             if getattr(c, "value", None) == ":")
+            if children.index(current) == colon_idx + 1:
                 return parent
         current = parent
         parent = parent.parent

@@ -294,6 +294,21 @@ def test_continue_inside_while_loop_is_not_found():
     assert rules(check_invalid_scope_use, "while True:\n    continue\n") == []
 
 
+def test_break_inside_one_line_while_loop_body_is_not_found():
+    # parso puts a one-line loop body's simple_stmt directly where a
+    # "suite" wrapper would otherwise be, with no suite-typed child at
+    # all - _enclosing_loop_body must find it by position (right after
+    # the loop's first ":"), not by searching for a child of type
+    # "suite", or it raises StopIteration here (silently swallowed as
+    # generator exhaustion on 2.7, an uncaught RuntimeError under
+    # PEP 479 on 3.7+).
+    assert rules(check_invalid_scope_use, "while True: break\n") == []
+
+
+def test_continue_inside_one_line_for_loop_body_is_not_found():
+    assert rules(check_invalid_scope_use, "for x in y: continue\n") == []
+
+
 def test_return_inside_method_is_not_found():
     src = "class C(object):\n    def f(self):\n        return 1\n"
     assert rules(check_invalid_scope_use, src) == []
@@ -391,6 +406,19 @@ def test_metaclass_assignment_is_found():
 
 def test_other_class_assignment_is_not_found():
     src = "class C(object):\n    x = 1\n"
+    assert rules(check_metaclass, src) == []
+
+
+def test_metaclass_assignment_in_one_line_class_body_is_found():
+    # parso puts a one-line class body's simple_stmt directly where a
+    # "suite" wrapper would otherwise be - same shape as the one-line
+    # loop body gap below.
+    src = "class C(object): __metaclass__ = type\n"
+    assert rules(check_metaclass, src) == [(1, "PY3-METACLASS")]
+
+
+def test_other_assignment_in_one_line_class_body_is_not_found():
+    src = "class C(object): x = 1\n"
     assert rules(check_metaclass, src) == []
 
 
