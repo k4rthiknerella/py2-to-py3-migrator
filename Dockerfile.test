@@ -3,4 +3,7 @@ ARG PYTHON=2.7.18
 FROM python:${PYTHON}-slim
 WORKDIR /app
 COPY requirements.txt requirements-dev.txt constraints-build.txt ./
-RUN PIP_CONSTRAINT=constraints-build.txt pip install --no-cache-dir -r requirements-dev.txt
+# No self-update check: pip runs it after installing wheels, importing modules
+# a wheel just installed could shadow (CVE-2026-6357; pip 20.0.2 on 2.7).
+RUN PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_CONSTRAINT=constraints-build.txt \
+    pip install --no-cache-dir -r requirements-dev.txt
