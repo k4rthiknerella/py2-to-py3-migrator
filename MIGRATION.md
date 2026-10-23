@@ -213,7 +213,7 @@ Waves: none — one unit, no import graph.
   tests ran there instead and passed) — both skip counts accounted for by
   environment, not by a test that can't run anywhere.
 
-**Resolved, commit `pending`:**
+**Resolved, commit `6f3c07c`:**
 - R10 (PY3-BUILTIN half only): `BUILTIN_NAMES` was missing `StandardError`
   — present in Python 2.7's `__builtin__`, absent from every judged
   version's `builtins`. Verified empirically by diffing 2.7.18's
@@ -380,8 +380,8 @@ any other process (no pickle, cache, queue, or database).
 | 2026-10-22 | 70d7bd5 | py2scan | 2.7.18→3.14 | (flake8, not a level) | `flake8 --max-complexity 10 py2scan tests` under both real interpreters, after R5 | 0 violations of any kind, both interpreters |
 | 2026-10-22 | n/a (research, no code change) | py2scan | (R6/R7 interpreter inventory) | `docker pull python:3.6-slim python:3.7-slim && docker run ... python3 --version`; `uv python install 3.13.12`; resolved paths for 3.8.20/3.9.25/3.10.19/3.11.14/3.12.12/3.13.12 (uv-managed) and 3.14.7 (Homebrew, same interpreter as every prior 3.14 evidence row) | all 9 confirmed final releases (no alpha/beta/rc); exact patch versions recorded above; 3.15 confirmed to have no final release yet (`uv python list` shows only `3.15.0a5`) |
 | 2026-10-22 | n/a (research, no code change) | py2scan | (R8/R10 derivation) | a probe script run against all 9 interpreters above, each checking every 2.7.18 `__builtin__` name against that interpreter's `builtins`, and every empirically-derived 2.7.18 top-level stdlib module name (227, via `sys.builtin_module_names` + `pkgutil.iter_modules([os.path.dirname(os.__file__)])` on the real 2.7.18 Docker image) against importability on that interpreter | builtin-missing set identical across all 9 (16 names, `BUILTIN_NAMES` + `StandardError`); stdlib-missing set grows monotonically from 64 names (3.6.15) to 78 (3.14.7), confirmed no name ever reappears once removed — full breakdown in Blockers above |
-| 2026-10-22 | pending | py2scan | 2.7.18→3.14 | (R10, builtin half) | full suite on both real interpreters after adding `StandardError` to `BUILTIN_NAMES` | `105 passed, 2 skipped` on 2.7.18; `102 passed, 5 skipped` on 3.14.7 |
-| 2026-10-22 | pending | py2scan | 2.7.18→3.14 | (flake8, not a level) | `flake8 --max-complexity 10 py2scan tests` under both real interpreters | 0 violations of any kind, both interpreters |
+| 2026-10-22 | 6f3c07c | py2scan | 2.7.18→3.14 | (R10, builtin half) | full suite on both real interpreters after adding `StandardError` to `BUILTIN_NAMES` | `105 passed, 2 skipped` on 2.7.18; `102 passed, 5 skipped` on 3.14.7 |
+| 2026-10-22 | 6f3c07c | py2scan | 2.7.18→3.14 | (flake8, not a level) | `flake8 --max-complexity 10 py2scan tests` under both real interpreters | 0 violations of any kind, both interpreters |
 
 ## Decisions
 - 2026-10-22, owner: `.md`-commit exception for `MIGRATION.md` and
