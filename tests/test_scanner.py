@@ -168,5 +168,17 @@ def test_nontext_coding_cookie_is_never_free_of_blockers():
                 blocked_versions.update(finding.versions)
         assert blocked_versions == set(SUPPORTED_VERSIONS)
         assert [g for g in result.findings if g.file == "ok.py"] == []
+        # R2 (round 3): the verdict alone being "blocked everywhere" is not
+        # enough - the actual JSON must be byte-identical across hosts too,
+        # which means the exact same rule name and message, not whichever
+        # one each host's own parse path happened to produce (PY3-PARSE
+        # under a 3.x host, since parso's own internal decode hits the
+        # same LookupError rot13 raises there; PY3-BAD-ENCODING-COOKIE
+        # under 2.7, since parso's decode succeeds there instead). Checking
+        # bad_coding_cookie() before parse_source runs at all, on every
+        # host, is what makes this assertion host-independent.
+        t_findings = [h for h in result.findings if h.file == "t.py"]
+        assert len(t_findings) == 1
+        assert t_findings[0].rule == "PY3-BAD-ENCODING-COOKIE"
     finally:
         shutil.rmtree(root)

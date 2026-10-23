@@ -116,6 +116,27 @@ def scan_file(root, rel, versions=SUPPORTED_VERSIONS):
     except (IOError, OSError) as e:
         return [], (rel, "cannot read: %s" % (e.strerror or e))
 
+    # R2/R1: a coding cookie naming a non-text codec (rot13, base64, ...)
+    # decodes without error on 2.7.18 but not on any judged Python 3
+    # version - checked, and returned on, before parso ever sees the
+    # file, on BOTH hosts equally. Checking this only *after* parsing
+    # (as an addition alongside whatever parso/RULES produced) gave
+    # byte-identical blocked-everywhere *verdicts* but not byte-identical
+    # *findings*: under 2.7, parso's own decode succeeds the same way
+    # CPython 2.7's does, so this was the only finding; under a 3.x
+    # host, parso's internal decode hits the identical LookupError
+    # rot13 raises under Python 3 and that got caught upstream as a
+    # differently-named, differently-worded PY3-PARSE finding instead -
+    # same verdict, different JSON. Short-circuiting here, before
+    # parse_source runs at all, means neither host-specific path is
+    # ever reached for this file.
+    bad_cookie = bad_coding_cookie(source)
+    if bad_cookie is not None:
+        return [Finding(
+            rel, 1, "PY3-BAD-ENCODING-COOKIE", "blocker",
+            "coding: %s; not a text encoding, Python 3 cannot decode the "
+            "source at all" % bad_cookie, versions)], None
+
     tree, tokens, failure, compiles = parse_source(full, source)
     if failure is not None:
         return [Finding(rel, failure.line, "PY3-PARSE", "blocker", failure.message,
@@ -124,20 +145,6 @@ def scan_file(root, rel, versions=SUPPORTED_VERSIONS):
     findings = []
     for rule in RULES:
         findings.extend(rule(rel, tree, tokens, versions))
-
-    # R1: a coding cookie naming a non-text codec (rot13, base64, ...)
-    # decodes without error on 2.7.18, so when py2scan runs there, parso
-    # parses the file and every rule above runs normally - nothing in
-    # that path ever sees a reason to flag it. But Python 3 rejects the
-    # cookie before parsing even starts, on every judged version, so
-    # free of blockers is wrong there regardless of which host is
-    # running py2scan right now.
-    bad_cookie = bad_coding_cookie(source)
-    if bad_cookie is not None:
-        findings.append(Finding(
-            rel, 1, "PY3-BAD-ENCODING-COOKIE", "blocker",
-            "coding: %s; not a text encoding, Python 3 cannot decode the "
-            "source at all" % bad_cookie, versions))
 
     # R1/R9: the live compile() backstop only ever ADDS a blocker, never
     # removes one a static rule already found, and it only speaks for the
