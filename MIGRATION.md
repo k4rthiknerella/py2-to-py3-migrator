@@ -46,21 +46,36 @@ Waves: one unit, one wave.
 | mock (dev) | 3.0.5 (2.7 only) | none | unused | |
 | flake8 (dev) | 3.9.2 (2.7), 7.4.1 (3.14) | 7.x | new in fe98001 for task item 5 | .py-migrate/out/resolved-3.14-*.txt |
 
-Advisories in both test images, interpreter included, aliases merged (`.py-migrate/advisories.py`; each row's
-evidence is in its `TRIAGE` entry and in tests/test_advisories.py). These decisions are the migration's triage,
-not owner-approved exceptions, so they are not under Decisions until the owner accepts them.
+Advisories (`.py-migrate/advisories.py`, aliases merged; each row's evidence is in its `TRIAGE` entry or its
+`NOT_REACHED` entry in tests/test_advisories.py, whose parametrized test checks it per advisory).
 
-| Env | Package | Advisories | Decision | Expires | Reachability |
+Scope (ruling R11): the environment is what py2scan installs and runs with, the interpreter and the Python
+packages, on both the 2.7 and the 3.14 side. Out of scope: operating-system packages inside the test images,
+and the 3.6 to 3.15 interpreters used only as test equipment for version facts (R9).
+
+How the interpreter was queried, and what that cannot see: OSV by the commit the release tag points to (the PSF
+database, which records fixes as git ranges), and NVD by CPE `cpe:2.3:a:python:python:<version>`. Neither is
+complete. For 2.7.18 OSV returns 4 and NVD 38, with 2 in both; for 3.14.9 OSV returns 1 and NVD 4, with none in both.
+NVD misses CVEs not yet given a CPE configuration and lists some that name Python only as another product's
+platform; neither sees the C libraries the interpreter links from the OS (OpenSSL, libexpat, zlib, libffi), code
+bundled in wheels, or anything undisclosed.
+
+Every accept below is a proposal pending owner acceptance (R11), not a decision; none is under Decisions.
+
+| Env | Package | Advisories | Proposal | Expires | Reachability |
 | --- | --- | --- | --- | --- | --- |
-| 2.7 | Jinja2 2.11.3 | CVE-2024-22195, CVE-2024-34064 (xmlattr); CVE-2024-56326, CVE-2025-27516 (sandbox) | accept: fixes need Python 3.7 | 2027-04-22 | not reached: no xmlattr or attr filter, one constant template, no sandbox |
-| 2.7 | pip 20.0.2 | CVE-2021-3572, CVE-2023-5752, CVE-2025-8869, CVE-2026-1703, CVE-2026-3219, CVE-2026-8643, CVE-2026-13346 | accept: 20.3.4, the last for 2.7, fixes none | 2027-04-22 | build only; no VCS URLs or other index; archives come from pinned PyPI releases whose setup.py already runs |
+| 2.7 | Jinja2 2.11.3 | CVE-2024-22195, CVE-2024-34064 (xmlattr); CVE-2024-56326, CVE-2025-27516 (sandbox) | accept, pending owner: fixes need Python 3.7 | 2027-04-22 | not reached: `do_xmlattr` and `do_attr` never run, `jinja2.sandbox` never loads, one constant template |
+| 2.7 | pip 20.0.2 | CVE-2021-3572, CVE-2023-5752, CVE-2025-8869, CVE-2026-1703, CVE-2026-3219, CVE-2026-8643, CVE-2026-13346 | accept, pending owner: 20.3.4, the last for 2.7, fixes none | 2027-04-22 | build only; no VCS URLs or other index; archives come from pinned PyPI releases whose setup.py already runs |
 | 2.7 | pip 20.0.2 | CVE-2026-6357 (self-update check) | mitigate: `PIP_DISABLE_PIP_VERSION_CHECK=1` | 2027-04-22 | was reached: the build log showed the check; gone after |
-| 2.7 | setuptools 44.1.0 | CVE-2022-40897, CVE-2024-6345, CVE-2025-47273 (package_index); CVE-2026-59890 (MANIFEST.in) | accept: 44.1.1 is the last for 2.7 | 2027-04-22 | not reached: no sdist uses setup_requires, dependency_links or easy_install; no MANIFEST.in |
-| 2.7 | wheel 0.34.2 | CVE-2022-40898 | accept | 2027-04-22 | not reached: the wheel CLI never runs |
-| 2.7 | pytest 4.6.11 | CVE-2025-71176 | accept (9.1.1 on 3.14 is fixed) | 2027-04-22 | throwaway single-user container; a test checks the temp root is closed to others |
-| 2.7 | zipp 1.2.0 | CVE-2024-5569 | accept | 2027-04-22 | never loaded by a run; no zip on sys.path |
-| 2.7 | CPython 2.7.18 | CVE-2023-27043 (email), CVE-2026-4519 (webbrowser), CVE-2026-19672 (tarfile), CVE-2026-3479 (pkgutil.get_data, disputed) | accept: end of life | 2027-04-22 | never loaded, except pkgutil (futures' namespace shim calls extend_path); get_data never runs |
-| 3.14 | CPython 3.14.9 | CVE-2026-114583 (tarfile.tar_filter) | accept; upgrade the image when 3.14.10 ships (the fix is on the 3.14 branch, unreleased) | 2027-01-22 | tarfile not loaded; measured once py2scan runs on 3.14 |
+| 2.7 | setuptools 44.1.0 | CVE-2022-40897, CVE-2024-6345, CVE-2025-47273 (package_index); CVE-2026-59890 (MANIFEST.in) | accept, pending owner: 44.1.1 is the last for 2.7 | 2027-04-22 | not reached: no sdist uses setup_requires, dependency_links or easy_install; no MANIFEST.in |
+| 2.7 | wheel 0.34.2 | CVE-2022-40898 | accept, pending owner | 2027-04-22 | not reached: the wheel CLI never runs |
+| 2.7 | pytest 4.6.11 | CVE-2025-71176 | accept, pending owner (9.1.1 on 3.14 is fixed) | 2027-04-22 | throwaway single-user container; a test checks the temp root is closed to others |
+| 2.7 | zipp 1.2.0 | CVE-2024-5569 | accept, pending owner | 2027-04-22 | never loaded by a run |
+| 2.7 | CPython 2.7.18 (OSV) | CVE-2023-27043, CVE-2026-3479 (disputed), CVE-2026-4519, CVE-2026-19672 | accept, pending owner: end of life | 2027-04-22 | not reached: email, webbrowser, tarfile never load; pkgutil loads (futures' namespace shim) but `get_data` never runs |
+| 2.7 | CPython 2.7.18 (NVD only) | 32 CVEs in tarfile, expat, webbrowser, wave, urlparse, urllib2, idna, heapq, plistlib, hmac, email, ssl, Cookie, venv, minidom, base64, httplib, expandvars, ConfigParser, HTMLParser, shutil | accept, pending owner: end of life | 2027-04-22 | not reached, one test per CVE; `urlparse`, `ssl` and `base64` load (jinja2._compat imports urllib) but `urlsplit`, `parse_qs(l)`, socket wrapping and `b64decode` never run |
+| 2.7 | CPython 2.7.18 (NVD only) | CVE-2009-2940 (PyGreSQL), CVE-2021-28667 (StackStorm); CVE-2015-5652, CVE-2022-26488 (Windows) | accept, pending owner | 2027-04-22 | not CPython; or Windows interpreter and installer properties py2scan cannot change |
+| 3.14 | CPython 3.14.9 (OSV) | CVE-2026-114583 (tarfile.tar_filter) | accept, pending owner; upgrade the image when 3.14.10 ships (the fix is on the 3.14 branch, unreleased) | 2027-01-22 | tarfile not loaded; measured once py2scan runs on 3.14 |
+| 3.14 | CPython 3.14.9 (NVD only) | CVE-2009-3720 (expat); CVE-2009-2940 (PyGreSQL), CVE-2020-29396 (Odoo), CVE-2021-32052 (Django) | accept, pending owner | 2027-04-22 | expat never reached (measured once py2scan runs on 3.14); the rest are not CPython |
 | 3.14 | packages | none | | | |
 
 ## Runtime surfaces
@@ -102,6 +117,8 @@ No shebangs, crontabs, CI, IaC or schedulers. py2scan runs nowhere outside this 
 | 2026-10-22 | 5ca23f1 | py2scan | 1 | L2 | `docker run --rm -v "$PWD":/app -w /app py2scan-test:2.7 python -m pytest tests/test_advisories.py -q` | 9 passed; two mutants (`import email.utils` in report.py, `pkgutil.get_data` in the scan worker) each fail it (.py-migrate/out/advisory-mutants.txt); on 3.14 it waits for py2scan to import there |
 | 2026-10-22 | 5ca23f1 | py2scan | 1 | L2 | `docker build --no-cache --progress=plain --build-arg PYTHON=<v> -f Dockerfile.test .`, before (fe98001's Dockerfile) and after | pip self-update warnings in the 2.7 build log: before 1, after 0; 3.14 after 0 (.py-migrate/out/build-*.log) |
 | 2026-10-22 | 5ca23f1 | py2scan | 1 | L2 | `python .py-migrate/compile_check.py .py-migrate/out/files` in py2scan-test:2.7 and :3.14; `python -m pytest -q` in py2scan-test:2.7 | checked 18, failed 0 on both; 136 passed, 1 skipped (tests/test_cli.py:249, root can read any file) |
+| 2026-10-22 | ea299ae | py2scan | 1 | L2 | `docker run --rm -v "$PWD":/app -w /app python:3.14-slim python .py-migrate/advisories.py .py-migrate/out/env-2.7.txt .py-migrate/out/env-3.14.txt`, with NVD added for the interpreters (R11) | 64 advisories after merging aliases, 63 proposed accepts pending owner acceptance, 1 mitigation, 0 untriaged or expired, exit 0; 2.7.18: OSV 4, NVD 38, both 2; 3.14.9: OSV 1, NVD 4, both 0 (.py-migrate/out/advisories-3.txt) |
+| 2026-10-22 | ea299ae | py2scan | 1 | L2 | `docker run --rm -v "$PWD":/app -w /app py2scan-test:2.7 python -m pytest tests/test_advisories.py -q`, the recorder now logging every Python and C function called | 50 passed, one parametrized case per advisory in NOT_REACHED; three mutants (`heapq.heappushpop` in the scan worker, `urlparse.urlparse` in `to_html`, `import email.utils`) fail exactly their advisories' cases (.py-migrate/out/advisory-mutants.txt) |
 
 ## Decisions
 - 2026-10-22, owner via the architect session: dependency majors the target needs may change on the migration branch without asking, each with advisory triage and a test; source-side pins stay while straddling. Expires 2027-04-22.
