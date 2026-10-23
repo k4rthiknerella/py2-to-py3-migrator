@@ -62,8 +62,9 @@ def test_exists(test):
 
 def check(corpus, record_path):
     header, expected = load(record_path)
-    files, findings = scan(corpus, jobs=4)
-    actual = [row(f.to_dict()) for f in findings]
+    result = scan(corpus, jobs=4)
+    files = result.files
+    actual = [row(f.to_dict()) for f in result.findings]
     added = sorted((Counter(actual) - Counter(expected)).elements())  # multisets: a line can repeat a finding
     removed = sorted((Counter(expected) - Counter(actual)).elements())
     problems = 0

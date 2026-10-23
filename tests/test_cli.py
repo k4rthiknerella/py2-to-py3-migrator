@@ -7,6 +7,9 @@ import pytest
 from click.testing import CliRunner
 
 from py2scan.cli import main
+from py2scan.versions import VERSIONS, label
+
+ALL = [label(v) for v in VERSIONS]
 
 
 def tree(root, files):
@@ -64,7 +67,7 @@ def test_json_report(tmpdir):
     assert data["rules"] == {"PY3-DIVISION": 1, "PY3-PRINT": 1}
     assert [(f["file"], f["line"], f["rule"], f["severity"]) for f in data["findings"]] == [
         ("a.py", 1, "PY3-PRINT", "blocker"), ("pkg/c.py", 1, "PY3-DIVISION", "warning")]
-    assert all(sorted(f) == ["file", "line", "message", "rule", "severity"] for f in data["findings"])
+    assert all(sorted(f) == ["file", "line", "message", "rule", "severity", "versions"] for f in data["findings"])
     assert all(f["message"] for f in data["findings"])
 
 
@@ -92,7 +95,9 @@ def test_only_warnings_exit_zero(tmpdir):
 
 def test_empty_tree(tmpdir):
     code, data = run_json(tree(tmpdir, {"README": b"nothing\n"}))
-    assert (code, data) == (0, {"files": 0, "readiness": 100.0, "rules": {}, "findings": []})
+    assert (code, data) == (0, {"schema_version": 2, "versions": ALL, "files": 0, "readiness": 100.0,
+                                "readiness_by_version": dict((v, 100.0) for v in ALL), "rules": {}, "findings": [],
+                                "ready": [], "skipped": [], "errors": [], "complete": True})
 
 
 def test_a_dot_directory_given_as_path_is_scanned(tmpdir):
@@ -262,10 +267,34 @@ def test_unreadable_file_is_an_error_not_a_clean_file(tmpdir):
     root = tree(tmpdir, {"a.py": b"x = 1\n"})
     os.chmod(os.path.join(root, "a.py"), 0)
     result = run(root, "--format", "json")
-    assert result.exit_code == 2 and "cannot read a.py" in result.output, result.output
+    assert result.exit_code == 2 and "a.py: cannot read: Permission denied" in result.output, result.output
 
 
 def test_unwritable_html_path_is_an_error(tmpdir):
     root = tree(tmpdir, {"a.py": b"x = 1\n"})
     result = run(root, "--html", os.path.join(str(tmpdir), "no", "such", "dir", "r.html"))
     assert result.exit_code == 2 and "cannot write" in result.output, result.output
+
+
+def test_json_carries_the_schema_version_and_the_judged_versions(tmpdir):
+    code, data = run_json(tree(tmpdir, {"a.py": b"x = 1\n"}))
+    assert (data["schema_version"], data["versions"], data["ready"]) == (2, ALL, [{"file": "a.py", "versions": ALL}])
+
+
+def test_python_option_chooses_the_judged_versions(tmpdir):
+    root = tree(tmpdir, {"a.py": b"print 1\n", "b.py": b"x = 1\n"})
+    code, data = run_json(root, "--python", "3.9", "--python", "3.6")
+    assert (code, data["versions"], data["findings"][0]["versions"]) == (1, ["3.6", "3.9"], ["3.6", "3.9"])
+    assert data["ready"] == [{"file": "a.py", "versions": []}, {"file": "b.py", "versions": ["3.6", "3.9"]}]
+    assert data["readiness_by_version"] == {"3.6": 50.0, "3.9": 50.0}
+
+
+def test_python_option_rejects_a_version_py2scan_does_not_judge(tmpdir):
+    result = run(tree(tmpdir, {"a.py": b"x = 1\n"}), "--python", "2.7")
+    assert result.exit_code == 2 and "2.7 is not a version py2scan judges" in result.output, result.output
+
+
+def test_text_report_lists_what_it_did_not_scan(tmpdir):
+    root = tree(tmpdir, {"a.py": b"x = 1\n"})
+    os.symlink("missing", os.path.join(root, "gone.py"))
+    assert "gone.py: skipped: dangling symbolic link" in run(root).output

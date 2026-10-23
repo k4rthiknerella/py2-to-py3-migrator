@@ -3,6 +3,9 @@
 import codecs
 import re
 
+from py2scan.py27 import registry27
+from py2scan.py27.codecs27 import CodecError
+
 # The 2.7 compiler ends a line at \r\n, \r or \n, and only there.
 _NEWLINE = re.compile(br"\r\n|\r|\n")
 _TEXT_NEWLINE = re.compile(u"\r\n|\r|\n")
@@ -40,18 +43,41 @@ def coding_cookie(source):
     return None, None
 
 
+# Well-formed UTF-8 (Unicode table 3-7), and the maximal subparts of ill-formed
+# sequences: the longest prefix of a well-formed sequence, else one byte.
+_UTF8 = re.compile(br"(?:[\x00-\x7f]|[\xc2-\xdf][\x80-\xbf]|\xe0[\xa0-\xbf][\x80-\xbf]|"
+                   br"[\xe1-\xec\xee\xef][\x80-\xbf]{2}|\xed[\x80-\x9f][\x80-\xbf]|"
+                   br"\xf0[\x90-\xbf][\x80-\xbf]{2}|[\xf1-\xf3][\x80-\xbf]{3}|\xf4[\x80-\x8f][\x80-\xbf]{2})+")
+_SUBPART = re.compile(br"\xe0[\xa0-\xbf]|[\xe1-\xec\xee\xef][\x80-\xbf]|\xed[\x80-\x9f]|"
+                      br"\xf0[\x90-\xbf][\x80-\xbf]?|[\xf1-\xf3][\x80-\xbf]{1,2}|\xf4[\x80-\x8f][\x80-\xbf]?|.",
+                      re.S)
+_SURROGATE = re.compile(u"[\ud800-\udfff]")
+
+
+def utf8_text(data):
+    """data as UTF-8, each maximal ill-formed subpart replaced by U+FFFD: what
+    Python 3's "replace" gives, and the same on 2.7, whose UTF-8 codec accepts
+    surrogates and so cannot be used."""
+    parts, i = [], 0
+    while i < len(data):
+        match = _UTF8.match(data, i) or _SUBPART.match(data, i)
+        parts.append(match.group().decode("utf-8") if match.re is _UTF8 else u"\ufffd")
+        i = match.end()
+    return u"".join(parts)
+
+
 def decode(source):
-    """The source as unicode, never failing: undecodable bytes become U+FFFD."""
+    """The source as unicode, never failing: as 2.7 decodes it when it can,
+    else as UTF-8 with U+FFFD for what does not decode, and for surrogates."""
     encoding = coding_cookie(source)[0]
     if source.startswith(codecs.BOM_UTF8):
         source, encoding = source[len(codecs.BOM_UTF8):], "utf-8"
-    try:
-        text = source.decode(encoding or "utf-8", "replace")
-    except Exception:  # unknown codec, or a bytes-to-bytes one such as zlib
-        text = None
-    if not isinstance(text, text_type):
-        text = source.decode("utf-8", "replace")
-    return text
+    if encoding:
+        try:
+            return _SURROGATE.sub(u"\ufffd", registry27.decode(source, encoding))
+        except CodecError:  # an unknown codec, a failed decoding, or one that gives bytes
+            pass
+    return utf8_text(source)
 
 
 def source_lines(source):

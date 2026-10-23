@@ -3,17 +3,27 @@
 
 The AST cannot tell `except X, e` from `except X as e`, or `<>` from `!=`, so
 those rules read tokens from the CST that the same 2.7 front end builds
-(py2scan.py27). Each rule yields (line, col, message) for every occurrence.
+(py2scan.py27). Each rule yields (line, col, message) for every occurrence, or
+a Hit when the occurrence applies to some Python 3 versions only, or has a
+severity of its own.
 """
 import re
 from collections import OrderedDict, namedtuple
 
 from py2scan.py27 import ast27, grammar, symbol
+from py2scan.versions import ALL
 
 BLOCKER = "blocker"
 WARNING = "warning"
 
 Rule = namedtuple("Rule", "id severity title")
+Hit = namedtuple("Hit", "line col message versions severity")
+
+
+def hit(line, col, message, versions=ALL, severity=None):
+    """An occurrence that applies to versions only, or whose severity is not its rule's."""
+    return Hit(line, col, message, versions, severity)
+
 
 RULES = OrderedDict()
 _CHECKS = []
@@ -54,10 +64,13 @@ class Module(object):
 
 
 def check(module):
-    """(rule id, line, col, message) for every occurrence of every rule."""
-    return [(rule_id, line, col, message)
-            for rule_id, check_rule in _CHECKS
-            for line, col, message in check_rule(module)]
+    """(rule id, line, col, message, versions, severity) for every occurrence of every rule."""
+    found = []
+    for rule_id, check_rule in _CHECKS:
+        for item in check_rule(module):
+            h = item if isinstance(item, Hit) else Hit(item[0], item[1], item[2], ALL, None)
+            found.append((rule_id, h.line, h.col, h.message, h.versions, h.severity or RULES[rule_id].severity))
+    return found
 
 
 @rule("PY3-PRINT", "print statement")

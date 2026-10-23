@@ -7,34 +7,72 @@ from collections import Counter, OrderedDict
 from jinja2 import Environment
 from markupsafe import Markup
 
+from py2scan.findings import labels
 from py2scan.rules import BLOCKER, RULES, WARNING
 from py2scan.source import text_type
+from py2scan.versions import ALL, VERSIONS, label, ranges
+
+
+# The JSON report's format. 2: versions, readiness_by_version, ready, skipped,
+# errors and complete, and the versions each finding applies to.
+SCHEMA_VERSION = 2
 
 
 class Report(object):
-    def __init__(self, root, files, findings):
+    def __init__(self, root, files, findings, versions=ALL, skipped=(), errors=()):
+        """findings are judged already: each applies to some of versions, and only to those."""
         self.root = root
         self.files = files
         self.findings = findings
-        blocked = set(f.file for f in findings if f.severity == BLOCKER)
+        self.versions = versions
+        self.skipped = list(skipped)
+        self.errors = list(errors)
+        blocked = {}
+        for f in findings:
+            if f.severity == BLOCKER:
+                blocked.setdefault(f.file, set()).update(f.versions)
+        self.ready_for = OrderedDict((path, versions - blocked.get(path, set())) for path in sorted(files))
         self.ready = len(files) - len(blocked)
         self.readiness = 100.0 * self.ready / len(files) if files else 100.0
+        self.readiness_by_version = OrderedDict(
+            (label(v), 100.0 * sum(v in ready for ready in self.ready_for.values()) / len(files) if files else 100.0)
+            for v in VERSIONS if v in versions)
         self.rules = OrderedDict(sorted(Counter(f.rule for f in findings).items()))
         self.has_blockers = bool(blocked)
+        self.complete = not self.errors
+
+    def _for(self, finding):
+        """The versions a finding applies to, when that is not every judged version."""
+        return u"" if finding.versions == self.versions else u" (Python %s)" % ranges(finding.versions)
 
     def to_text(self):
-        lines = [u"%s:%d: %s [%s] %s" % (f.file, f.line, f.rule, f.severity, f.message)
+        lines = [u"%s:%d: %s [%s] %s%s" % (f.file, f.line, f.rule, f.severity, f.message, self._for(f))
                  for f in self.findings]
+        lines.extend(u"%s: skipped: %s" % entry for entry in self.skipped)
+        lines.extend(u"%s: error: %s" % entry for entry in self.errors)
         lines.append(u"%d files, %d findings, readiness %.1f%%" % (
             len(self.files), len(self.findings), self.readiness))
+        lines.append(u"readiness by version: %s" % u", ".join(
+            u"%s %.1f%%" % item for item in self.readiness_by_version.items()))
+        if not self.complete:
+            lines.append(u"incomplete: %d entr%s could not be read" % (
+                len(self.errors), u"y" if len(self.errors) == 1 else u"ies"))
         return u"\n".join(lines)
 
     def to_json(self):
         return json.dumps(OrderedDict([
+            ("schema_version", SCHEMA_VERSION),
+            ("versions", labels(self.versions)),
             ("files", len(self.files)),
             ("readiness", self.readiness),
+            ("readiness_by_version", self.readiness_by_version),
             ("rules", self.rules),
             ("findings", [f.to_dict() for f in self.findings]),
+            ("ready", [OrderedDict([("file", path), ("versions", labels(ready))])
+                       for path, ready in self.ready_for.items()]),
+            ("skipped", [OrderedDict([("path", path), ("reason", reason)]) for path, reason in self.skipped]),
+            ("errors", [OrderedDict([("path", path), ("reason", reason)]) for path, reason in self.errors]),
+            ("complete", self.complete),
         ]), indent=2, separators=(",", ": "))
 
     def to_html(self):
@@ -52,6 +90,12 @@ class Report(object):
             rules=[(RULES[r], severities[r], n) for r, n in self.rules.items()],
             by_file=by_file,
             clean=[path for path in sorted(self.files) if path not in by_file],
+            versions=ranges(self.versions),
+            by_version=list(self.readiness_by_version.items()),
+            ready_for=dict((path, ranges(ready) or u"none") for path, ready in self.ready_for.items()),
+            applies=self._for,
+            skipped=self.skipped,
+            errors=self.errors,
         )
 
 
@@ -144,6 +188,7 @@ tbody tr + tr td { border-top: 1px solid var(--rule); }
 pre { margin: 0; padding: 0.4rem 0.6rem; background: var(--panel); border-radius: 0.25rem;
       overflow-x: auto; white-space: pre; tab-size: 8; }
 .missing { color: var(--muted); font-style: italic; }
+.incomplete { color: var(--blocker); font-weight: 600; }
 details { margin-top: 1rem; }
 summary { cursor: pointer; color: var(--muted); }
 details ul { columns: 2 20rem; padding-left: 1.2rem; }
@@ -159,8 +204,22 @@ details ul { columns: 2 20rem; padding-left: 1.2rem; }
 </div>
 <div class="meter"><span style="width: {{ readiness }}"></span></div>
 <p class="totals">{{ blockers }} blocker{{ "s" if blockers != 1 }} and
-{{- " " }}{{ warnings }} warning{{ "s" if warnings != 1 }}</p>
+{{- " " }}{{ warnings }} warning{{ "s" if warnings != 1 }}, judged against Python {{ versions|text }}</p>
+{% if errors %}
+<p class="incomplete">This report is incomplete: {{ errors|length }} entr{{ "y" if errors|length == 1 else "ies" }}
+{{- " " }}could not be read.</p>
+{% endif %}
 </header>
+
+<h2>Readiness by version</h2>
+<table class="versions">
+<thead><tr><th>Python</th><th class="count">Files with no blocker</th></tr></thead>
+<tbody>
+{% for version, percent in by_version %}
+<tr><td>{{ version|text }}</td><td class="count">{{ "%.1f%%"|format(percent) }}</td></tr>
+{% endfor %}
+</tbody>
+</table>
 
 <h2>Findings by rule</h2>
 {% if rules %}
@@ -182,13 +241,15 @@ details ul { columns: 2 20rem; padding-left: 1.2rem; }
 {% for path, findings in by_file.items() %}
 <section class="file">
 <h3><code>{{ path|text }}</code>
-{{- "" }}<span class="sev">{{ findings|length }} finding{{ "s" if findings|length != 1 }}</span></h3>
+{{- "" }}<span class="sev">{{ findings|length }} finding{{ "s" if findings|length != 1 }};
+{{- " " }}ready for {{ ready_for[path]|text }}</span></h3>
 <table class="findings">
 <colgroup><col class="c-line"><col class="c-rule"><col class="c-sev"><col></colgroup>
 <tbody>
 {% for f in findings %}
 <tr class="finding"><td class="line">{{ f.line }}</td><td><code>{{ f.rule }}</code></td>
-{{- "" }}<td><span class="sev {{ f.severity }}">{{ f.severity }}</span></td><td>{{ f.message|text }}</td></tr>
+{{- "" }}<td><span class="sev {{ f.severity }}">{{ f.severity }}</span></td><td>{{ f.message|text }}
+{{- applies(f)|text }}</td></tr>
 <tr class="src"><td></td><td colspan="3">
 {{- "" }}{% if f.source is none %}<span class="missing">line {{ f.line }} is past the end of the file</span>
 {{- "" }}{% else %}<pre><code>{{ f.source|code }}</code></pre>{% endif %}</td></tr>
@@ -197,6 +258,21 @@ details ul { columns: 2 20rem; padding-left: 1.2rem; }
 </table>
 </section>
 {% endfor %}
+{% endif %}
+
+{% if errors or skipped %}
+<h2>Not scanned</h2>
+<table class="unscanned">
+<thead><tr><th>Path</th><th>Why</th></tr></thead>
+<tbody>
+{% for path, reason in errors %}
+<tr><td><code>{{ path|text }}</code></td><td><span class="sev blocker">error</span> {{ reason|text }}</td></tr>
+{% endfor %}
+{% for path, reason in skipped %}
+<tr><td><code>{{ path|text }}</code></td><td>{{ reason|text }}</td></tr>
+{% endfor %}
+</tbody>
+</table>
 {% endif %}
 
 {% if clean %}
