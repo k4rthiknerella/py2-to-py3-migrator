@@ -19,10 +19,11 @@ def main():
 @click.option("--format", "fmt", type=click.Choice(["text", "json"]), default="text")
 @click.option("--config", "config_path", type=click.Path(exists=True, dir_okay=False),
               help="YAML file with disable/severity overrides.")
-def scan_cmd(path, fmt, config_path):
+@click.option("--jobs", type=int, default=4, help="Parallel workers (default 4).")
+def scan_cmd(path, fmt, config_path, jobs):
     """Scan every .py file under PATH."""
     config = load_config(config_path)
-    files, raw_findings = scan(path)
+    files, raw_findings = scan(path, jobs=jobs)
     findings = config.apply(raw_findings)
 
     if fmt == "json":

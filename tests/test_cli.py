@@ -65,3 +65,14 @@ def test_format_json_output():
     assert payload["readiness"] == 0.0
     assert payload["rules"] == {"PY3-PRINT": 1}
     assert payload["findings"][0]["rule"] == "PY3-PRINT"
+
+
+def test_jobs_flag_is_accepted():
+    root = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(root, "a.py"), "wb") as f:
+            f.write(b"print 'hello'\n")
+        result = CliRunner().invoke(main, ["scan", root, "--jobs", "2"])
+    finally:
+        shutil.rmtree(root)
+    assert result.exit_code == 1, result.output
